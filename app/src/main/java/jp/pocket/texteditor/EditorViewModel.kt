@@ -188,18 +188,41 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
         val stored=repo.persist(s.document,s.text);repo.snapshot(stored,s.text,"外部削除前",preferences.value.histories)
         val uri=Uri.parse(stored.uri ?: error("URIがありません"))
         withContext(Dispatchers.IO){requireProviderFlag(uri,DocumentsContract.Document.FLAG_SUPPORTS_DELETE);check(DocumentsContract.deleteDocument(repo.context.contentResolver,uri)){"外部ファイルを削除できません"}}
-        val latest=_tabs.value.find{it.document.id==id && !it.unloaded} ?: s
-        val protected=repo.persist(latest.document,latest.text)
-        assertUnchanged(latest)
-        val d=protected.copy(kind="MEMO",uri=null,projectUri=null,savedRevision=protected.revision,savedBody=protected.body,deleted=System.currentTimeMillis(),tabOrder=-1,active=false)
-        repo.dao.put(d);_tabs.value=_tabs.value.filter{it.document.id!=id};if(_active.value==id)_active.value=_tabs.value.firstOrNull()?.document?.id;persistTabs()
-        message.value="外部ファイルを削除しました。本文はアプリのごみ箱に保持されています"
+        val live=_tabs.value.find{it.document.id==id}
+        if(live==null)repo.persist(stored.copy(kind="MEMO",uri=null,projectUri=null),s.text)
+        else update(id){it.copy(document=it.document.copy(kind="MEMO",uri=null,projectUri=null),status="削除後の本文を保護中")}
+        try {
+            detach(id,true)
+            message.value="外部ファイルを削除しました。本文はアプリのごみ箱に保持されています"
+        } catch(e:Exception) {
+            if(e is CancellationException)throw e
+            message.value="外部ファイルは削除済みです。本文は内部メモとして保持しています。${e.message}"
+        }
     }
     fun favorite(doc: Document) = runTask { val s=_tabs.value.find {it.document.id==doc.id}; if(s!=null){ update(doc.id){it.copy(document=it.document.copy(favorite=!it.document.favorite))}; flush(doc.id) } else repo.dao.put(doc.copy(favorite=!doc.favorite)) }
-    fun close(id: String) = runTask { autosaves.remove(id)?.cancel(); flush(id); val s=session(id); repo.dao.put(s.document.copy(tabOrder=-1,active=false));assertUnchanged(s); _tabs.value=_tabs.value.filter { it.document.id!=id }; if(_active.value==id) _active.value=_tabs.value.lastOrNull()?.document?.id; persistTabs() }
+    private suspend fun detach(id:String,trash:Boolean) {
+        autosaves.remove(id)?.cancel()
+        locks.getOrPut(id){Mutex()}.withLock {
+            val captured=loadSession(id)
+            if(trash)require(captured.document.kind=="MEMO"){"外部文書はタブを閉じてください"}
+            val stored=repo.persist(captured.document,captured.text)
+            if(trash)repo.snapshot(stored,captured.text,"削除前",preferences.value.histories)
+            repo.dao.put(stored.copy(deleted=if(trash)System.currentTimeMillis()else stored.deleted,tabOrder=-1,active=false))
+            val live=_tabs.value.find{it.document.id==id}
+            if(live!=null && live.document.revision!=captured.document.revision) {
+                // Restore live metadata and preserve text before reporting cancellation.
+                repo.persist(live.document,live.text)
+                error("処理中に新しい入力がありました。本文を保持して操作を中止しました。再試行してください")
+            }
+            _tabs.value=_tabs.value.filter{it.document.id!=id}
+            if(_active.value==id)_active.value=_tabs.value.lastOrNull()?.document?.id
+        }
+        persistTabs()
+    }
+    fun close(id:String)=runTask{detach(id,false)}
     fun move(id: String, delta: Int) = runTask { val list=_tabs.value.toMutableList(); val i=list.indexOfFirst {it.document.id==id}; val j=(i+delta).coerceIn(0,list.lastIndex); if(i>=0) { val s=list.removeAt(i); list.add(j,s); _tabs.value=list; persistTabs() } }
     fun duplicate(doc: Document) = runTask { val s=_tabs.value.find {it.document.id==doc.id && !it.unloaded}; val text=s?.text ?: withContext(Dispatchers.IO){repo.read(doc.body)}; newMemo(text,"コピー_${doc.name}") }
-    fun trash(id: String) = runTask { val s=_tabs.value.find {it.document.id==id}; val d=s?.document ?: repo.dao.get(id) ?: return@runTask; require(d.kind=="MEMO") { "外部文書はタブを閉じてください" }; if(s!=null){flush(id);val protected=loadSession(id);repo.snapshot(protected.document,protected.text,"削除前",preferences.value.histories);if(!s.unloaded)assertUnchanged(protected)}; val latest=repo.dao.get(id) ?: d; repo.dao.put(latest.copy(deleted=System.currentTimeMillis(),tabOrder=-1,active=false)); _tabs.value=_tabs.value.filter {it.document.id!=id}; if(_active.value==id) _active.value=_tabs.value.firstOrNull()?.document?.id; persistTabs() }
+    fun trash(id:String)=runTask{detach(id,true)}
     fun restoreTrash(doc: Document)=runTask { repo.dao.put(doc.copy(deleted=null,updated=System.currentTimeMillis())) }
     suspend fun history(id: String)=repo.dao.history(id)
     fun restoreRevision(id: String, revision: Revision)=runTask { val s=session(id); repo.snapshot(s.document,s.text,"履歴復元前",preferences.value.histories); val text=withContext(Dispatchers.IO){repo.read(revision.body)}; assertUnchanged(s);edit(id,text,0,0,0); flush(id) }

@@ -6,6 +6,7 @@ import android.content.pm.ProviderInfo
 import android.net.Uri
 import android.os.Looper
 import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import androidx.datastore.preferences.core.edit
 import kotlinx.coroutines.*
@@ -70,5 +71,17 @@ class ViewModelTest {
         val hits=runBlocking{vm.crossSearch("日本語",true,false)}
         assertEquals(listOf(first.document.id),hits.map{it.first.id}.distinct())
         assertTrue(runBlocking{vm.crossSearch("original",true,false)}.isEmpty())
+    }
+
+    @Test fun typingDuringTrashCancelsRemovalAndPersistsLatestAcceptedText() {
+        val first=memo("original")
+        background{vm.flush(first.document.id)}
+        await{vm.viewModelScope.coroutineContext[Job]!!.children.count()==2}
+        val mutex=ReflectionHelpers.getField<kotlinx.coroutines.sync.Mutex>(vm.repo,"lock")
+        runBlocking{mutex.lock()}
+        try {vm.trash(first.document.id);shadowOf(Looper.getMainLooper()).idle();vm.edit(first.document.id,"new input during removal",0,0,0)}finally{mutex.unlock()}
+        await{vm.message.value?.contains("新しい入力") == true}
+        assertEquals("new input during removal",vm.session(first.document.id).text)
+        runBlocking{val doc=vm.repo.dao.get(first.document.id)!!;assertNull(doc.deleted);assertEquals("new input during removal",vm.repo.read(doc.body))}
     }
 }
