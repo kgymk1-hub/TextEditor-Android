@@ -2,14 +2,17 @@
 
 ## 自動テスト
 
-`./gradlew :app:testDebugUnitTest :app:lintDebug` を実行します。JUnitとRobolectric（API 28のAndroid APIシミュレーション）を使用します。
+`./gradlew :app:testDebugUnitTest :app:lintDebug :app:lintRelease` を実行します。JUnitとRobolectric（API 28のAndroid APIシミュレーション）を使用します。
 
 - `TextToolsTest`：UTF-8／BOM／Shift_JIS、改行・末尾保持、変換エラー、バイナリ拒否、CSV複数行／引用符／1500行、ZIPパス／重複／圧縮率／エントリー上限、結合順、通常／正規表現検索。
-- `StorageTest`：Roomと本文の再生成・再読込、カーソルと11番目タブ位置、古い退避の拒否、外部文書と正式保存状態の分離、30世代保持、欠損からの履歴復旧、同じURIへの上書きと再読込、破損応答・読取専用時の失敗と本文保持。
+- `StorageTest`：Roomと本文の再生成・再読込、カーソルと11番目タブ位置、古い退避の拒否、外部文書と正式保存状態の分離、30世代保持、欠損からの履歴復旧、同じURIへの上書きと再読込、破損応答・読取専用時の失敗と本文保持、FTS更新と日本語部分一致、v1→v2移行、ディレクトリ逸脱拒否、保存上限の事前確認、設定の範囲検証。
 - `SaveRulesTest`：保存中の追加リビジョンを未保存として保持、将来リビジョンの拒否、LF／CRLF／CRのネイティブ表示用変換と完全往復、混在改行の保持。
-- `NativeEditorTest`：日本語選択と挿入、Undo/Redo、行頭／末尾、範囲インデント。
+- `NativeEditorTest`：日本語選択と挿入、Undo/Redo、行頭／末尾、範囲インデント、大容量区間の往復・区間外本文保持・区間をまたぐUndo/Redo・モード閾値をまたぐUndo、20MiB末尾編集、絵文字を分断しない移動、InputConnectionの未確定→確定。
 
-2026年10月11日：最新コードで34件成功、Debug / Release APK・AABビルド成功、Lintはエラー0件。Debug APKの署名検証成功、minSdk 26 / targetSdk 36、INTERNET権限なしを生成物から確認しました。
+- `LargeDataTest`：20MiB CSV、20万行／60万セル相当の表、行索引検索、引用符エラー、サロゲート／CRLF境界、Unicodeの大小文字候補。
+- `ViewModelTest`：退避タブの再読込、退避された本文の削除前履歴、バックアップの追加復元とモード・履歴保持、保存前の入力を使う横断検索。メインループを動かしながら非同期保存の完了を待ちます。
+
+最新のテスト件数・Lint結果・ソースコミットは配布物の「検証結果.md」と「build-manifest.json」に記録します。ビルドで生成されたJUnit XML・HTML、Debug / Release Lintレポートも同梱します。所有者署名設定は一時的な試験鍵で署名APK・AABを生成し、署名検証まで確認します。試験鍵と試験署名版は配布物に含めません。
 
 ## 実機で実施する20項目
 

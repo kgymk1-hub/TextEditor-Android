@@ -11,6 +11,7 @@ import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
 import org.junit.*
 import org.junit.Assert.*
 import org.junit.runner.RunWith
@@ -49,6 +50,31 @@ class StorageTest {
         val d=repo.persist(Document(kind="EXTERNAL",revision=1,savedRevision=0),"draft")
         assertThrows(SecurityException::class.java){repo.writeVerified(Uri.parse("content://test.files/document"),"draft".toByteArray())};assertEquals("draft",repo.read(d.body));assertEquals(0L,d.savedRevision)
     }
+    @Test fun bodyIndexUpdatesAtomicallyAndSupportsJapaneseSubstrings()=runBlocking {
+        val d=repo.persist(Document(),"日本語で本文検索できます")
+        assertEquals(listOf(d.id),repo.dao.searchIds(BodyTokens.query("本文")!!))
+        repo.persist(d.copy(revision=1),"updated english text")
+        assertTrue(repo.dao.searchIds(BodyTokens.query("本文")!!).isEmpty())
+        assertEquals(listOf(d.id),repo.dao.searchIds(BodyTokens.query("ENGLISH")!!))
+    }
+    @Test fun migrationKeepsBodyHistoryAndMetadata()=runBlocking {
+        val d=repo.persist(Document(cursor=7,tabOrder=4),"移行前の本文");repo.snapshot(d,"履歴","test",30)
+        repo.db.openHelper.writableDatabase.execSQL("DROP TABLE body_search")
+        repo.db.openHelper.writableDatabase.version=1
+        repo.db.close();repo=Repository(repo.context)
+        assertEquals("移行前の本文",repo.read(repo.dao.get(d.id)!!.body))
+        assertEquals(4,repo.dao.get(d.id)!!.tabOrder);assertEquals(1,repo.dao.history(d.id).size)
+        repo.repairAndClean();assertEquals(listOf(d.id),repo.dao.searchIds(BodyTokens.query("本文")!!))
+    }
+    @Test fun internalPathRejectsParentAndCurrentDirectory() {
+        assertThrows(IllegalArgumentException::class.java){repo.file("..")}
+        assertThrows(IllegalArgumentException::class.java){repo.file(".")}
+    }
+
+    @Test fun oversizedWriteIsRejectedBeforeTruncatingOriginal(){val provider=TestProvider();provider.attachInfo(repo.context,ProviderInfo().apply{authority="test.files"});ShadowContentResolver.registerProviderInternal("test.files",provider);provider.file.writeText("original");assertThrows(IllegalArgumentException::class.java){repo.writeVerified(Uri.parse("content://test.files/document"),ByteArray(24*1024*1024+1))};assertEquals("original",provider.file.readText())}
+
+    @Test fun importedPreferencesCannotDisableHistoryWithInvalidBounds()=runBlocking {repo.prefs.set("histories",-100);repo.prefs.set("fontSize",99999);repo.prefs.set("encoding","invalid-charset");val p=repo.prefs.flow.first();assertEquals(1,p.histories);assertEquals(36,p.fontSize);assertEquals("UTF-8",p.defaultEncoding)}
+
 }
 class TestProvider:ContentProvider() {
     lateinit var file:File;var corruptReads=false;var readOnly=false

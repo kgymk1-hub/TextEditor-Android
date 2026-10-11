@@ -34,11 +34,20 @@ data class Document(
 data class Revision(@PrimaryKey val id: String = UUID.randomUUID().toString(), val documentId: String, val body: String, val time: Long = System.currentTimeMillis(), val reason: String, val size: Long)
 @Entity(tableName="archives")
 data class Archive(@PrimaryKey val id: String, val uri: String, val hash: String, val file: String, val name: String)
+@Fts4(notIndexed=["documentId", "bodyPath"])
+@Entity(tableName="body_search")
+data class BodySearch(val documentId: String, val tokens: String, val bodyPath: String)
+data class SearchStatus(val documentId:String,val bodyPath:String,val fallback:Boolean)
 @Dao
 interface EditorDao {
     @Query("SELECT * FROM documents ORDER BY updated DESC") fun observe(): Flow<List<Document>>
     @Query("SELECT * FROM documents") suspend fun all(): List<Document>
     @Query("SELECT * FROM documents WHERE id=:id") suspend fun get(id: String): Document?
+    @Query("DELETE FROM body_search WHERE documentId=:id") suspend fun removeSearch(id: String)
+    @Insert suspend fun addSearch(entry: BodySearch)
+    @Query("SELECT documentId FROM body_search WHERE body_search MATCH :query") suspend fun searchIds(query: String): List<String>
+    @Query("SELECT documentId, bodyPath, tokens = '' AS fallback FROM body_search") suspend fun searchEntries(): List<SearchStatus>
+    @Query("SELECT bodyPath FROM body_search WHERE documentId=:id LIMIT 1") suspend fun searchBody(id:String):String?
     @Upsert suspend fun put(doc: Document)
     @Upsert suspend fun putAll(docs: List<Document>)
     @Query("DELETE FROM documents WHERE id=:id") suspend fun remove(id: String)
@@ -49,8 +58,17 @@ interface EditorDao {
     @Query("SELECT * FROM archives WHERE id=:id") suspend fun archive(id: String): Archive?
     @Query("SELECT * FROM archives") suspend fun archives(): List<Archive>
 }
-@Database(entities=[Document::class, Revision::class, Archive::class], version=1, exportSchema=false)
-abstract class EditorDatabase: RoomDatabase() { abstract fun dao(): EditorDao }
+@Database(entities=[Document::class, Revision::class, Archive::class, BodySearch::class], version=2, exportSchema=false)
+abstract class EditorDatabase: RoomDatabase() {
+    abstract fun dao(): EditorDao
+    companion object {
+        val MIGRATION_1_2 = object: androidx.room.migration.Migration(1,2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("CREATE VIRTUAL TABLE IF NOT EXISTS `body_search` USING FTS4(`documentId` TEXT NOT NULL, `tokens` TEXT NOT NULL, `bodyPath` TEXT NOT NULL, notindexed=`documentId`, notindexed=`bodyPath`)")
+            }
+        }
+    }
+}
 val Context.settings by preferencesDataStore("editor_settings")
 data class Preferences(
     val theme: String = "システム", val fontSize: Int = 16, val lineSpace: Int = 4,
@@ -81,18 +99,33 @@ class PreferenceStore(private val context: Context) {
         previewAuto=p[booleanPreferencesKey("previewAuto")] ?: false, compatibility=p[booleanPreferencesKey("compatibility")] ?: false,
         largeMb=p[intPreferencesKey("largeMb")] ?: 5, mono=p[booleanPreferencesKey("mono")] ?: true, sort=p[stringPreferencesKey("sort")] ?: "更新日時"
     ) }
-    suspend fun set(key: String, value: Any) { context.settings.edit { when(value) {
-        is String -> it[stringPreferencesKey(key)] = value
-        is Int -> it[intPreferencesKey(key)] = value
-        is Boolean -> it[booleanPreferencesKey(key)] = value
-    } } }
+    suspend fun set(key: String, value: Any) {
+        val normalized=PreferenceValues.normalize(key,value) ?: return
+        context.settings.edit { when(normalized) {
+            is String -> it[stringPreferencesKey(key)] = normalized
+            is Int -> it[intPreferencesKey(key)] = normalized
+            is Boolean -> it[booleanPreferencesKey(key)] = normalized
+        } }
+    }
+}
+object PreferenceValues {
+    private val ranges=mapOf("fontSize" to 10..36,"lineSpace" to 0..20,"autosave" to 100..5000,"histories" to 1..100,"historyMb" to 8..256,"historyDays" to 1..365,"trashDays" to 1..365,"indent" to 1..8,"largeMb" to 1..20)
+    private val choices=mapOf("theme" to setOf("システム","ライト","ダーク"),"symbolMode" to setOf("常時","編集中のみ","非表示"),"encoding" to setOf("UTF-8","UTF-8 BOM","Shift_JIS"),"newline" to setOf("LF","CRLF","CR"),"sort" to setOf("更新日時","名前"))
+    private val flags=setOf("wrap","numbers","highlight","invisible","currentLine","restore","tabs","autoIndent","brackets","csvHeader","previewAuto","compatibility","mono")
+    fun normalize(key:String,value:Any):Any? {
+        ranges[key]?.let{return (value as? Int)?.coerceIn(it)}
+        choices[key]?.let{return (value as? String)?.takeIf{v->v in it}}
+        if(key in flags)return value as? Boolean
+        if(key in setOf("symbols","shortcuts"))return (value as? String)?.take(8192)
+        return null
+    }
 }
 class Repository(val context: Context) {
-    val db = Room.databaseBuilder(context, EditorDatabase::class.java, "editor.db").build()
+    val db = Room.databaseBuilder(context, EditorDatabase::class.java, "editor.db").addMigrations(EditorDatabase.MIGRATION_1_2).build()
     val dao = db.dao(); val prefs = PreferenceStore(context)
     val root = File(context.filesDir,"documents").apply { mkdirs() }
     private val lock = Mutex()
-    fun file(path: String): File { require(Regex("[A-Za-z0-9_.-]+").matches(path)); return File(root,path) }
+    fun file(path: String): File { require(path != "." && path != ".." && Regex("[A-Za-z0-9_.-]+").matches(path)); return File(root,path) }
     fun read(path: String): String = file(path).readText(Charsets.UTF_8)
     fun atomic(bytes: ByteArray, name: String = UUID.randomUUID().toString()+".txt"): String {
         val target = file(name); val temp = File(root,"$name.tmp")
@@ -104,8 +137,21 @@ class Repository(val context: Context) {
         if(existing != null && existing.revision > doc.revision) return@withLock existing
         val path = if(existing?.revision == doc.revision && existing.body.isNotEmpty()) existing.body else atomic(text.toByteArray(Charsets.UTF_8))
         val stored = doc.copy(body=path, savedRevision=if(doc.kind=="MEMO") doc.revision else doc.savedRevision, savedBody=if(doc.kind=="MEMO") path else doc.savedBody)
-        dao.put(stored); stored
+        db.withTransaction {
+            dao.put(stored)
+            val indexed=dao.searchBody(doc.id)
+            if(indexed!=path) {
+                dao.removeSearch(doc.id)
+                dao.addSearch(BodySearch(doc.id, BodyTokens.index(text), path))
+            }
+        }; stored
     } }
+    suspend fun literalCandidates(query:String):Set<String>? {
+        val token=BodyTokens.query(query) ?: return null
+        val indexed=dao.searchEntries().associateBy{it.documentId}
+        val matched=dao.searchIds(token).toSet()
+        return dao.all().filter{it.id in matched || indexed[it.id]?.bodyPath!=it.body || indexed[it.id]?.fallback!=false}.map{it.id}.toSet()
+    }
     suspend fun snapshot(doc: Document, text: String, reason: String, count: Int): Unit = withContext(Dispatchers.IO) { lock.withLock {
         val last = dao.history(doc.id).firstOrNull()
         if(last != null && read(last.body)==text) return@withLock
@@ -125,6 +171,12 @@ class Repository(val context: Context) {
                 dao.history(doc.id).forEachIndexed { i, r -> if(i>=p.histories || now-r.time > TimeUnit.DAYS.toMillis(p.historyDays.toLong())) dao.removeRevision(r.id) }
             }
         }
+        val indexed=dao.searchEntries().associateBy{it.documentId}
+        val documents=dao.all()
+        indexed.keys.filter{id->documents.none{it.id==id}}.forEach{dao.removeSearch(it)}
+        documents.filter{it.body.isNotEmpty() && file(it.body).exists() && indexed[it.id]?.bodyPath!=it.body}.forEach{doc ->
+            db.withTransaction { dao.removeSearch(doc.id); dao.addSearch(BodySearch(doc.id,BodyTokens.index(read(doc.body)),doc.body)) }
+        }
         val referenced = mutableSetOf<String>(); dao.all().forEach { d -> referenced.add(d.body); d.savedBody?.let { referenced.add(it) }; dao.history(d.id).forEach { referenced.add(it.body) } }; dao.archives().forEach { referenced.add(it.file) }
         // Delay orphan cleanup to avoid touching files written just before a crash/transaction.
         root.listFiles()?.filter { it.name !in referenced && now-it.lastModified() > TimeUnit.DAYS.toMillis(1) }?.forEach { it.delete() }
@@ -133,9 +185,10 @@ class Repository(val context: Context) {
     fun bytes(uri: Uri): ByteArray = context.contentResolver.openInputStream(uri)?.use { input ->
         val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(8192); while(true) { val n=input.read(buffer); if(n<0) break; require(output.size()+n <= 24*1024*1024) { "24MBを超えるファイルです" }; output.write(buffer,0,n) }; output.toByteArray()
     } ?: error("ファイルを読み込めません")
-    fun writeVerified(uri: Uri, bytes: ByteArray): String {
+    fun writeVerified(uri: Uri, bytes: ByteArray, maxBytes:Int=24*1024*1024): String {
+        require(bytes.size<=maxBytes){"保存サイズが上限を超えています。文書を分割してください"}
         context.contentResolver.openOutputStream(uri,"wt")?.use { it.write(bytes); it.flush() } ?: error("書込権限がありません")
-        val actual = TextCodec.hash(this.bytes(uri)); check(actual==TextCodec.hash(bytes)) { "書込後の検証に失敗しました。作業コピーを保持しています" }; return actual
+        val actual = context.contentResolver.openInputStream(uri)?.use{TextCodec.hash(it.readBounded(maxBytes))} ?: error("書込後に読み込めません"); check(actual==TextCodec.hash(bytes)) { "書込後の検証に失敗しました。作業コピーを保持しています" }; return actual
     }
 }
 class CleanupWorker(context: Context, params: WorkerParameters): CoroutineWorker(context,params) {

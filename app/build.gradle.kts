@@ -10,7 +10,19 @@ android {
     defaultConfig { applicationId = "jp.pocket.texteditor"; minSdk = 26; targetSdk = 36; versionCode = 1; versionName = "1.0.0-dev"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     testOptions { unitTests.isIncludeAndroidResources = true }
     buildFeatures { compose = true; buildConfig = true }
-    buildTypes { release { isMinifyEnabled = false } }
+    val ownerStore=System.getenv("POCKET_SIGN_STORE")
+    if(!ownerStore.isNullOrBlank()) {
+        signingConfigs.create("ownerRelease") {
+            storeFile=file(ownerStore)
+            storePassword=requireNotNull(System.getenv("POCKET_SIGN_STORE_PASSWORD")){"POCKET_SIGN_STORE_PASSWORD is required"}
+            keyAlias=requireNotNull(System.getenv("POCKET_SIGN_ALIAS")){"POCKET_SIGN_ALIAS is required"}
+            keyPassword=requireNotNull(System.getenv("POCKET_SIGN_KEY_PASSWORD")){"POCKET_SIGN_KEY_PASSWORD is required"}
+        }
+    }
+    buildTypes { release {
+        isMinifyEnabled = false
+        if(!ownerStore.isNullOrBlank())signingConfig=signingConfigs.getByName("ownerRelease")
+    } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     packaging { resources.excludes += setOf("META-INF/AL2.0", "META-INF/LGPL2.1") }

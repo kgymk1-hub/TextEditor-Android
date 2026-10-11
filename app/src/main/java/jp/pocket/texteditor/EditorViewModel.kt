@@ -28,7 +28,7 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
     val message = MutableStateFlow<String?>(null)
     val conflict = MutableStateFlow<Conflict?>(null)
     val zipChoice = MutableStateFlow<ZipChoice?>(null)
-    private val autosaves = mutableMapOf<String,Job>(); private val locks = mutableMapOf<String,Mutex>()
+    private val autosaves = mutableMapOf<String,Job>(); private val locks = java.util.concurrent.ConcurrentHashMap<String,Mutex>()
     private val scope = CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
     private val ready = MutableStateFlow(false)
     private var selectedProject: String? = null
@@ -60,6 +60,8 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
         _tabs.value += Session(d,text,"自動退避中"); _active.value=d.id; flush(d.id); persistTabs()
     }
     fun edit(id: String, text: String, cursor: Int, selection: Int, scroll: Int) {
+        if(_tabs.value.find{it.document.id==id}?.unloaded!=false)return
+        if(text.length>24*1024*1024){message.value="本文が編集サイズの上限を超えました。文書を分割してください";return}
         update(id) { s -> val changed=s.text!=text; s.copy(text=text,document=s.document.copy(revision=s.document.revision+if(changed) 1 else 0,cursor=cursor,selection=selection,scroll=scroll,updated=if(changed) System.currentTimeMillis() else s.document.updated),status=if(changed) "自動退避中" else s.status) }
         autosaves.remove(id)?.cancel()
         autosaves[id]=scope.launch { delay(preferences.value.autosave.coerceIn(100,5000).toLong()); try { flush(id) } catch(e:Exception) { if(e is CancellationException) throw e; update(id) { it.copy(status="自動退避失敗") }; message.value="自動退避失敗：${e.message}。別名保存してください" } }
@@ -74,6 +76,11 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
     } }
     fun flushAll() { if(!ready.value) return; scope.launch { try { _tabs.value.forEach { flush(it.document.id) }; persistTabs() } catch(e:Exception) { message.value="退避失敗：${e.message}" } } }
     private suspend fun persistTabs() {
+        val selected=_tabs.value.find{it.document.id==_active.value && it.unloaded}
+        if(selected!=null) {
+            val text=withContext(Dispatchers.IO){if(selected.document.body.isEmpty())""else repo.read(selected.document.body)}
+            update(selected.document.id){it.copy(text=text,unloaded=false)}
+        }
         _tabs.value.forEachIndexed { index,s -> update(s.document.id) { it.copy(document=it.document.copy(tabOrder=index,active=it.document.id==_active.value)) } }
         _tabs.value.forEach { flush(it.document.id) }
     }
@@ -111,7 +118,7 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
         if(existing!=null) { activate(existing.document.id); return }
         val decoded=withContext(Dispatchers.IO) { val bytes=repo.bytes(uri); Pair(TextCodec.decode(bytes,encoding),TextCodec.hash(bytes)) }
         try { repo.context.contentResolver.takePersistableUriPermission(uri,flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)) } catch(_:SecurityException) { message.value="永続権限を取得できません。再起動後は再選択が必要な場合があります" }
-        val display=DocumentBytes.editorText(decoded.first)
+        val display=withContext(Dispatchers.Default){DocumentBytes.editorText(decoded.first)}
         val name=repo.name(uri); val body=withContext(Dispatchers.IO){repo.atomic(display.first.toByteArray())}
         val old=repo.dao.all().find { it.uri==uri.toString() && it.deleted==null }
         if(old!=null && old.revision!=old.savedRevision) { openMemo(old); message.value="未保存の退避本文があるため、再読込は比較画面から実行してください"; return }
@@ -128,8 +135,8 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
             repo.persist(d,s.text); repo.snapshot(d,s.text,"外部上書き前",preferences.value.histories)
         }
         try {
-            val currentBytes=withContext(Dispatchers.IO){repo.bytes(uri)}; val hash=TextCodec.hash(currentBytes)
-            if(hash != (forceHash ?: d.savedHash)) { conflict.value=Conflict(id,TextCodec.decode(currentBytes,d.encoding).text,hash); update(id){it.copy(status="競合あり")}; return@withLock }
+            val currentBytes=withContext(Dispatchers.IO){repo.bytes(uri)}; val hash=withContext(Dispatchers.IO){TextCodec.hash(currentBytes)}
+            if(hash != (forceHash ?: d.savedHash)) { conflict.value=Conflict(id,withContext(Dispatchers.IO){TextCodec.decode(currentBytes,d.encoding).text},hash); update(id){it.copy(status="競合あり")}; return@withLock }
             val bytes=withContext(Dispatchers.IO){DocumentBytes.encode(d,s.text)}
             update(id){it.copy(status="元ファイルへ保存中")}
             val newHash=withContext(Dispatchers.IO){repo.writeVerified(uri,bytes)}
@@ -155,7 +162,7 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
     fun reload(id: String, encoding: String?=null) = runTask {
         val s=session(id); repo.snapshot(s.document,s.text,"再読込前",preferences.value.histories)
         val bytes=withContext(Dispatchers.IO){repo.bytes(Uri.parse(s.document.uri ?: error("外部ファイルではありません")))}
-        val decoded=TextCodec.decode(bytes,encoding ?: s.document.encoding);val display=DocumentBytes.editorText(decoded); val body=withContext(Dispatchers.IO){repo.atomic(display.first.toByteArray())}
+        val decoded=withContext(Dispatchers.IO){TextCodec.decode(bytes,encoding ?: s.document.encoding)};val display=withContext(Dispatchers.Default){DocumentBytes.editorText(decoded)}; val body=withContext(Dispatchers.IO){repo.atomic(display.first.toByteArray())}
         assertUnchanged(s)
         update(id){it.copy(text=display.first,document=it.document.copy(revision=it.document.revision+1,savedRevision=it.document.revision+1,savedHash=TextCodec.hash(bytes),savedBody=body,body=body,encoding=decoded.encoding,newline=decoded.newline,normalizedNewlines=display.second),status="保存済み")}; flush(id); conflict.value=null
     }
@@ -181,23 +188,26 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
         val stored=repo.persist(s.document,s.text);repo.snapshot(stored,s.text,"外部削除前",preferences.value.histories)
         val uri=Uri.parse(stored.uri ?: error("URIがありません"))
         withContext(Dispatchers.IO){requireProviderFlag(uri,DocumentsContract.Document.FLAG_SUPPORTS_DELETE);check(DocumentsContract.deleteDocument(repo.context.contentResolver,uri)){"外部ファイルを削除できません"}}
-        val d=stored.copy(kind="MEMO",uri=null,projectUri=null,deleted=System.currentTimeMillis(),tabOrder=-1,active=false)
+        val latest=_tabs.value.find{it.document.id==id && !it.unloaded} ?: s
+        val protected=repo.persist(latest.document,latest.text)
+        assertUnchanged(latest)
+        val d=protected.copy(kind="MEMO",uri=null,projectUri=null,savedRevision=protected.revision,savedBody=protected.body,deleted=System.currentTimeMillis(),tabOrder=-1,active=false)
         repo.dao.put(d);_tabs.value=_tabs.value.filter{it.document.id!=id};if(_active.value==id)_active.value=_tabs.value.firstOrNull()?.document?.id;persistTabs()
         message.value="外部ファイルを削除しました。本文はアプリのごみ箱に保持されています"
     }
     fun favorite(doc: Document) = runTask { val s=_tabs.value.find {it.document.id==doc.id}; if(s!=null){ update(doc.id){it.copy(document=it.document.copy(favorite=!it.document.favorite))}; flush(doc.id) } else repo.dao.put(doc.copy(favorite=!doc.favorite)) }
-    fun close(id: String) = runTask { autosaves.remove(id)?.cancel(); flush(id); val s=session(id); repo.dao.put(s.document.copy(tabOrder=-1,active=false)); _tabs.value=_tabs.value.filter { it.document.id!=id }; if(_active.value==id) _active.value=_tabs.value.lastOrNull()?.document?.id; persistTabs() }
+    fun close(id: String) = runTask { autosaves.remove(id)?.cancel(); flush(id); val s=session(id); repo.dao.put(s.document.copy(tabOrder=-1,active=false));assertUnchanged(s); _tabs.value=_tabs.value.filter { it.document.id!=id }; if(_active.value==id) _active.value=_tabs.value.lastOrNull()?.document?.id; persistTabs() }
     fun move(id: String, delta: Int) = runTask { val list=_tabs.value.toMutableList(); val i=list.indexOfFirst {it.document.id==id}; val j=(i+delta).coerceIn(0,list.lastIndex); if(i>=0) { val s=list.removeAt(i); list.add(j,s); _tabs.value=list; persistTabs() } }
     fun duplicate(doc: Document) = runTask { val s=_tabs.value.find {it.document.id==doc.id && !it.unloaded}; val text=s?.text ?: withContext(Dispatchers.IO){repo.read(doc.body)}; newMemo(text,"コピー_${doc.name}") }
-    fun trash(id: String) = runTask { val s=_tabs.value.find {it.document.id==id}; val d=s?.document ?: repo.dao.get(id) ?: return@runTask; require(d.kind=="MEMO") { "外部文書はタブを閉じてください" }; if(s!=null){flush(id); repo.snapshot(d,s.text,"削除前",preferences.value.histories)}; val latest=repo.dao.get(id) ?: d; repo.dao.put(latest.copy(deleted=System.currentTimeMillis(),tabOrder=-1,active=false)); _tabs.value=_tabs.value.filter {it.document.id!=id}; if(_active.value==id) _active.value=_tabs.value.firstOrNull()?.document?.id; persistTabs() }
+    fun trash(id: String) = runTask { val s=_tabs.value.find {it.document.id==id}; val d=s?.document ?: repo.dao.get(id) ?: return@runTask; require(d.kind=="MEMO") { "外部文書はタブを閉じてください" }; if(s!=null){flush(id);val protected=loadSession(id);repo.snapshot(protected.document,protected.text,"削除前",preferences.value.histories);if(!s.unloaded)assertUnchanged(protected)}; val latest=repo.dao.get(id) ?: d; repo.dao.put(latest.copy(deleted=System.currentTimeMillis(),tabOrder=-1,active=false)); _tabs.value=_tabs.value.filter {it.document.id!=id}; if(_active.value==id) _active.value=_tabs.value.firstOrNull()?.document?.id; persistTabs() }
     fun restoreTrash(doc: Document)=runTask { repo.dao.put(doc.copy(deleted=null,updated=System.currentTimeMillis())) }
     suspend fun history(id: String)=repo.dao.history(id)
     fun restoreRevision(id: String, revision: Revision)=runTask { val s=session(id); repo.snapshot(s.document,s.text,"履歴復元前",preferences.value.histories); val text=withContext(Dispatchers.IO){repo.read(revision.body)}; assertUnchanged(s);edit(id,text,0,0,0); flush(id) }
     fun replaceAll(id: String, query: String, replacement: String, case: Boolean, regex: Boolean)=runTask {
         val s=session(id); repo.snapshot(s.document,s.text,"全置換前",preferences.value.histories)
-        assertUnchanged(s);val re=SearchTools.regex(query,case,regex); val text=if(regex) re.replace(s.text,replacement) else re.replace(s.text){replacement}; edit(id,text,s.document.cursor.coerceAtMost(text.length),s.document.cursor.coerceAtMost(text.length),s.document.scroll); flush(id)
+        assertUnchanged(s);val text=withContext(Dispatchers.Default){val re=SearchTools.regex(query,case,regex);if(regex)re.replace(s.text,replacement)else re.replace(s.text){replacement}};assertUnchanged(s);edit(id,text,s.document.cursor.coerceAtMost(text.length),s.document.cursor.coerceAtMost(text.length),s.document.scroll); flush(id)
     }
-    fun changeFormat(id: String, encoding: String, newline: String)=runTask { val s=session(id); val text=if(newline==s.document.newline) s.text else TextCodec.convertNewlines(s.text,"LF"); TextCodec.encode(text,encoding); repo.snapshot(s.document,s.text,"文字コード・改行変更前",preferences.value.histories);assertUnchanged(s); update(id){it.copy(text=text,document=it.document.copy(encoding=encoding,newline=newline,normalizedNewlines=if(newline!=it.document.newline)true else it.document.normalizedNewlines,revision=it.document.revision+1),status="自動退避中")}; flush(id) }
+    fun changeFormat(id: String, encoding: String, newline: String)=runTask { val s=session(id);val text=withContext(Dispatchers.Default){val value=if(newline==s.document.newline)s.text else TextCodec.convertNewlines(s.text,"LF");TextCodec.encode(value,encoding);value}; repo.snapshot(s.document,s.text,"文字コード・改行変更前",preferences.value.histories);assertUnchanged(s); update(id){it.copy(text=text,document=it.document.copy(encoding=encoding,newline=newline,normalizedNewlines=if(newline!=it.document.newline)true else it.document.normalizedNewlines,revision=it.document.revision+1),status="自動退避中")}; flush(id) }
     fun updatePosition(id: String, cursor: Int, selection: Int, scroll: Int) { val s=_tabs.value.find{it.document.id==id} ?: return; edit(id,s.text,cursor,selection,scroll) }
     fun mode(id: String, mode: String) { update(id){it.copy(document=it.document.copy(mode=mode))}; runTask{flush(id)} }
     fun setting(key: String,value: Any)=runTask{repo.prefs.set(key,value)}
@@ -244,17 +254,17 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
     suspend fun backupBytes(): ByteArray = withContext(Dispatchers.IO) {
         _tabs.value.forEach{flush(it.document.id)}
         val files=mutableListOf<Pair<String,ByteArray>>();val docs=JSONArray()
-        repo.dao.all().forEach{d -> val obj=JSONObject().put("id",d.id).put("name",d.name).put("path",d.path).put("encoding",d.encoding).put("newline",d.newline).put("normalizedNewlines",d.normalizedNewlines).put("favorite",d.favorite).put("deleted",d.deleted).put("tabOrder",d.tabOrder).put("active",d.active).put("cursor",d.cursor).put("selection",d.selection).put("scroll",d.scroll); files.add("bodies/${d.id}.txt" to repo.read(d.body).toByteArray()); val history=JSONArray();repo.dao.history(d.id).forEach{r -> history.put(JSONObject().put("id",r.id).put("time",r.time).put("reason",r.reason));files.add("history/${r.id}.txt" to repo.read(r.body).toByteArray())};obj.put("history",history);docs.put(obj) }
+        repo.dao.all().forEach{d -> val obj=JSONObject().put("id",d.id).put("name",d.name).put("path",d.path).put("encoding",d.encoding).put("newline",d.newline).put("normalizedNewlines",d.normalizedNewlines).put("favorite",d.favorite).put("deleted",d.deleted).put("tabOrder",d.tabOrder).put("active",d.active).put("cursor",d.cursor).put("selection",d.selection).put("scroll",d.scroll).put("mode",d.mode); files.add("bodies/${d.id}.txt" to repo.read(d.body).toByteArray()); val history=JSONArray();repo.dao.history(d.id).forEach{r -> history.put(JSONObject().put("id",r.id).put("time",r.time).put("reason",r.reason));files.add("history/${r.id}.txt" to repo.read(r.body).toByteArray())};obj.put("history",history);docs.put(obj) }
         val prefs=JSONObject(); repo.context.settings.data.first().asMap().forEach{(key,value)->prefs.put(key.name,value)}
         files.add("manifest.json" to JSONObject().put("format","pocket-backup-v1").put("documents",docs).put("preferences",prefs).toString().toByteArray());ByteArrayOutputStream().also{SafeZip.write(files,it)}.toByteArray()
     }
-    fun exportBackup(uri: Uri)=runTask{val bytes=backupBytes(); withContext(Dispatchers.IO){repo.context.contentResolver.openOutputStream(uri,"wt")?.use{it.write(bytes)} ?: error("バックアップを書けません")};message.value="本文・履歴・設定をバックアップしました。外部URIの権限は移行しません"}
+    fun exportBackup(uri: Uri)=runTask{val bytes=backupBytes(); withContext(Dispatchers.IO){repo.writeVerified(uri,bytes,64*1024*1024)};message.value="本文・履歴・設定をバックアップしました。外部URIの権限は移行しません"}
     fun importBackup(uri: Uri)=runTask {
         val files=withContext(Dispatchers.IO){repo.context.contentResolver.openInputStream(uri)?.use{SafeZip.read(it)} ?: error("バックアップを読めません")}
         val manifest=JSONObject(files["manifest.json"]?.toString(Charsets.UTF_8) ?: error("バックアップではありません"));require(manifest.getString("format")=="pocket-backup-v1")
         val list=manifest.getJSONArray("documents"); val prepared=mutableListOf<Pair<Document,List<Revision>>>()
         withContext(Dispatchers.IO) {
-            for(i in 0 until list.length()) { val obj=list.getJSONObject(i);val original=obj.getString("id"); require(Regex("[A-Za-z0-9-]+").matches(original)); val text=TextCodec.decode(files["bodies/$original.txt"] ?: error("本文が欠損しています")).text;val body=repo.atomic(text.toByteArray());val d=Document(name=obj.getString("name"),path=SafeZip.safePath(obj.getString("path")),encoding=obj.getString("encoding"),newline=obj.getString("newline"),normalizedNewlines=obj.optBoolean("normalizedNewlines",false),body=body,savedRevision=0,cursor=obj.optInt("cursor"),selection=obj.optInt("selection"),scroll=obj.optInt("scroll"),tabOrder=if(obj.optInt("tabOrder",-1)>=0 && obj.isNull("deleted"))_tabs.value.size+obj.getInt("tabOrder")else -1,active=_tabs.value.isEmpty() && obj.optBoolean("active"),favorite=obj.optBoolean("favorite"),deleted=if(obj.isNull("deleted")) null else obj.getLong("deleted"));val revisions=mutableListOf<Revision>();val history=obj.optJSONArray("history") ?: JSONArray();for(j in 0 until history.length()){val r=history.getJSONObject(j);val bytes=files["history/${r.getString("id")}.txt"] ?: error("履歴が欠損しています");revisions.add(Revision(documentId=d.id,body=repo.atomic(bytes),time=r.getLong("time"),reason=r.getString("reason"),size=bytes.size.toLong()))};prepared.add(d to revisions) }
+            for(i in 0 until list.length()) { val obj=list.getJSONObject(i);val original=obj.getString("id"); require(Regex("[A-Za-z0-9-]+").matches(original)); val text=TextCodec.decode(files["bodies/$original.txt"] ?: error("本文が欠損しています")).text;val body=repo.atomic(text.toByteArray());val d=Document(name=obj.getString("name"),path=SafeZip.safePath(obj.getString("path")),encoding=obj.getString("encoding").also{require(it in setOf("UTF-8","UTF-8 BOM","Shift_JIS"))},newline=obj.getString("newline").also{require(it in setOf("LF","CRLF","CR"))},normalizedNewlines=obj.optBoolean("normalizedNewlines",false),body=body,savedRevision=0,cursor=obj.optInt("cursor").coerceIn(0,text.length),selection=obj.optInt("selection").coerceIn(0,text.length),scroll=obj.optInt("scroll").coerceAtLeast(0),mode=obj.optString("mode","編集").takeIf{it in setOf("編集","HTML","Markdown","CSV")} ?: "編集",tabOrder=if(obj.optInt("tabOrder",-1)>=0 && obj.isNull("deleted"))_tabs.value.size+obj.getInt("tabOrder")else -1,active=_tabs.value.isEmpty() && obj.optBoolean("active"),favorite=obj.optBoolean("favorite"),deleted=if(obj.isNull("deleted")) null else obj.getLong("deleted"));val revisions=mutableListOf<Revision>();val history=obj.optJSONArray("history") ?: JSONArray();for(j in 0 until history.length()){val r=history.getJSONObject(j);val bytes=files["history/${r.getString("id")}.txt"] ?: error("履歴が欠損しています");revisions.add(Revision(documentId=d.id,body=repo.atomic(bytes),time=r.getLong("time"),reason=r.getString("reason"),size=bytes.size.toLong()))};prepared.add(d to revisions) }
         }
         repo.db.withTransaction { prepared.forEach{(d,rs)->repo.dao.put(d);rs.forEach{repo.dao.addRevision(it)}} }
         val p=manifest.optJSONObject("preferences"); p?.keys()?.forEach{ key -> val value=p.get(key); if(value is String || value is Boolean || value is Int) repo.prefs.set(key,value) }
@@ -287,7 +297,11 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
         };resources
     }
     suspend fun crossSearch(query: String, case: Boolean, regex: Boolean): List<Pair<Document,IntRange>> = withContext(Dispatchers.IO) {
-        repo.dao.all().filter{it.deleted==null}.flatMap{d -> val text=_tabs.value.find{it.document.id==d.id && !it.unloaded}?.text ?: repo.read(d.body);SearchTools.matches(text,query,case,regex).take(100).map{d to it}}.take(1000)
+        val token=if(regex)null else BodyTokens.query(query)
+        val entries=if(token!=null)repo.dao.searchEntries().associateBy{it.documentId}else emptyMap()
+        val candidates=if(token!=null)repo.dao.searchIds(token).toSet()else emptySet()
+        val live=_tabs.value.filter{!it.unloaded}.associateBy{it.document.id}
+        repo.dao.all().filter{it.deleted==null && (token==null || it.id in live || it.id in candidates || entries[it.id]?.bodyPath!=it.body || entries[it.id]?.fallback!=false)}.flatMap{d -> val text=_tabs.value.find{it.document.id==d.id && !it.unloaded}?.text ?: if(d.body.isEmpty())""else repo.read(d.body);SearchTools.matches(text,query,case,regex).take(100).map{d to it}}.take(1000)
     }
     companion object { val textExtensions=setOf("txt","csv","html","htm","js","css","json","md","xml","yaml","yml","kt","java","py","log","svg") }
 }

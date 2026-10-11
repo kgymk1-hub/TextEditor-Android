@@ -159,8 +159,9 @@ fun PocketApp(vm:EditorViewModel) {
                     if(session.document.mode=="編集" && prefs.symbolMode!="非表示" && (prefs.symbolMode=="常時" || WindowInsets.ime.getBottom(LocalDensity.current)>0)) {
                         LazyRow(Modifier.fillMaxWidth().heightIn(min=48.dp).background(MaterialTheme.colorScheme.surfaceVariant)){items(listOf("←","→","行頭","行末","選択←","選択→","Undo","Redo","字下げ+","字下げ−")+prefs.symbols.split(' ').filter{it.isNotEmpty()}){symbol->TextButton(onClick={symbolAction(symbol)},modifier=if(symbol in setOf("←","→","選択←","選択→"))Modifier.pointerInput(symbol){detectTapGestures(onPress={symbolAction(symbol);val job=scope.launch{delay(400);while(isActive){symbolAction(symbol);delay(60)}};tryAwaitRelease();job.cancel()})}else Modifier){Text(symbol)}}}
                     }
-                    val cursor=session.document.cursor.coerceIn(0,session.text.length);val line=session.text.take(cursor).count{it=='\n'}+1;val column=cursor-(if(cursor==0)-1 else session.text.lastIndexOf('\n',cursor-1))
-                    Text("${session.text.length}文字 · ${session.text.count{it=='\n'}+1}行 · $line:$column · 選択 ${kotlin.math.abs(session.document.selection-cursor)}",style=MaterialTheme.typography.labelSmall,modifier=Modifier.padding(6.dp))
+                    val cursor=session.document.cursor.coerceIn(0,session.text.length)
+                    val metrics by produceState<TextMetrics?>(null,session.text,cursor){value=null;value=kotlinx.coroutines.runInterruptible(Dispatchers.Default){TextMetrics.calculate(session.text,cursor)}}
+                    Text("${session.text.length}文字 · ${metrics?.let{"${it.lines}行 · ${it.line}:${it.column}"} ?: "行数を計算中…"} · 選択 ${kotlin.math.abs(session.document.selection-cursor)}",style=MaterialTheme.typography.labelSmall,modifier=Modifier.padding(6.dp))
                 }
             }
         }

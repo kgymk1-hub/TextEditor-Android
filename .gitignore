@@ -6,3 +6,5 @@ work/
 *.jks
 *.keystore
 .kotlin/
+
+__pycache__/

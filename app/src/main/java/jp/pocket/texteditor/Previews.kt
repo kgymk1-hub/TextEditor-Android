@@ -19,11 +19,12 @@ import org.commonmark.renderer.html.HtmlRenderer
 import org.commonmark.ext.gfm.tables.TablesExtension
 import java.io.ByteArrayInputStream
 
+@Suppress("DEPRECATION")
 @Composable
 fun DocumentPreview(session:Session,tabs:List<Session>,prefs:Preferences,javascript:Boolean,version:Int,modifier:Modifier,extra:Map<String,ByteArray> = emptyMap()) {
     val mode=session.document.mode
-    if(session.text.length>prefs.largeMb*1024*1024) { Box(modifier.padding(16.dp)){Text("大容量モードではプレビューを停止します。テキスト編集をご利用ください")};return }
     if(mode=="CSV") {CsvPreview(session.text,prefs.csvHeader,modifier);return}
+    if(session.text.length>prefs.largeMb*1024*1024) { Box(modifier.padding(16.dp)){Text("大容量モードではプレビューを停止します。テキスト編集をご利用ください")};return }
     var console by remember(session.document.id,version){mutableStateOf(listOf<String>())}
     val html by produceState("",session.document.id,version,if(prefs.previewAuto)session.text else null,mode) {
         value=withContext(Dispatchers.Default){if(mode=="Markdown") {val extensions=listOf(TablesExtension.create());HtmlRenderer.builder().escapeHtml(true).sanitizeUrls(true).extensions(extensions).build().render(Parser.builder().extensions(extensions).build().parse(session.text))}else session.text}
@@ -38,8 +39,8 @@ fun DocumentPreview(session:Session,tabs:List<Session>,prefs:Preferences,javascr
                 settings.javaScriptEnabled=javascript && mode=="HTML";settings.allowFileAccess=false;settings.allowContentAccess=false
                 settings.domStorageEnabled=false;settings.databaseEnabled=false;settings.blockNetworkLoads=true
                 settings.mixedContentMode=WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                @Suppress("DEPRECATION") settings.allowFileAccessFromFileURLs=false
-                @Suppress("DEPRECATION") settings.allowUniversalAccessFromFileURLs=false
+                settings.allowFileAccessFromFileURLs=false
+                settings.allowUniversalAccessFromFileURLs=false
                 CookieManager.getInstance().setAcceptThirdPartyCookies(this,false)
                 webViewClient=object:WebViewClient(){
                     override fun shouldOverrideUrlLoading(view:WebView,request:WebResourceRequest):Boolean=true
@@ -65,15 +66,16 @@ fun DocumentPreview(session:Session,tabs:List<Session>,prefs:Preferences,javascr
 private fun emptyResource()=WebResourceResponse("text/plain","UTF-8",403,"Blocked",emptyMap(),ByteArrayInputStream(ByteArray(0)))
 @Composable
 fun CsvPreview(text:String,header:Boolean,modifier:Modifier) {
-    var rows by remember(text){mutableStateOf<List<List<String>>>(emptyList())};var error by remember(text){mutableStateOf<String?>(null)}
-    LaunchedEffect(text){try{rows=withContext(Dispatchers.Default){CsvParser.parse(text)}}catch(e:Exception){error=e.message}}
+    var index by remember(text){mutableStateOf<CsvIndex?>(null)};var error by remember(text){mutableStateOf<String?>(null)}
+    LaunchedEffect(text){try{index=kotlinx.coroutines.runInterruptible(Dispatchers.Default){CsvIndex.build(text)}}catch(e:Exception){if(e is kotlinx.coroutines.CancellationException)throw e;error=e.message}}
     var query by remember{mutableStateOf("")};var width by remember{mutableIntStateOf(160)};val clipboard=LocalClipboardManager.current
     Column(modifier){
         Row(Modifier.fillMaxWidth()){OutlinedTextField(query,{query=it},label={Text("表内検索")},modifier=Modifier.weight(1f),singleLine=true);TextButton(onClick={width=(width-40).coerceAtLeast(80)}){Text("列−")};TextButton(onClick={width=(width+40).coerceAtMost(480)}){Text("列＋")}}
-        Text(error ?: "${rows.size}行・セルをタップしてコピー",style=MaterialTheme.typography.labelSmall)
-        val visible=remember(rows,query){rows.withIndex().filter{query.isBlank() || it.value.any{cell->cell.contains(query,true)}}}
-        LazyColumn(Modifier.weight(1f)){items(visible,key={it.index}){entry ->
-            LazyRow {itemsIndexed(entry.value){column,cell -> Surface(color=if(header && entry.index==0)MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface,modifier=Modifier.width(width.dp).heightIn(min=48.dp).border(0.5.dp,MaterialTheme.colorScheme.outline).clickable{clipboard.setText(AnnotatedString(cell))}){Text(cell,modifier=Modifier.padding(8.dp),style=MaterialTheme.typography.bodySmall)}}}
+        Text(error ?: index?.let{"${it.size}行・セルをタップしてコピー"} ?: "CSVの行索引を作成中…",style=MaterialTheme.typography.labelSmall)
+        val visible by produceState<List<Int>>(emptyList(),index,query){value=kotlinx.coroutines.runInterruptible(Dispatchers.Default){index?.matching(query) ?: emptyList()}}
+        LazyColumn(Modifier.weight(1f)){items(visible,key={it}){rowNumber ->
+            val cells=remember(index,rowNumber){index?.row(rowNumber) ?: emptyList()}
+            LazyRow {itemsIndexed(cells){column,cell -> Surface(color=if(header && rowNumber==0)MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface,modifier=Modifier.width(width.dp).heightIn(min=48.dp).border(0.5.dp,MaterialTheme.colorScheme.outline).clickable{clipboard.setText(AnnotatedString(cell))}){Text(cell,modifier=Modifier.padding(8.dp),style=MaterialTheme.typography.bodySmall)}}}
         }}
     }
 }

@@ -33,26 +33,51 @@ object TextCodec {
     fun convertNewlines(text: String, newline: String): String = text.replace("\r\n", "\n").replace('\r', '\n').replace("\n", when(newline) { "CRLF" -> "\r\n"; "CR" -> "\r"; else -> "\n" })
 }
 
+/** Index offsets only; cells are decoded for the visible row, never for the whole table. */
+class CsvIndex private constructor(private val text: String, private val starts: IntArray, private val ends: IntArray) {
+    val size: Int get() = starts.size
+    fun row(index: Int): List<String> = CsvParser.parseRow(text, starts[index], ends[index])
+    fun matching(query: String): List<Int> = (0 until size).filter { if(Thread.currentThread().isInterrupted)throw java.util.concurrent.CancellationException(); query.isBlank() || row(it).any { cell -> cell.contains(query, true) } }
+    companion object {
+        fun build(text: String): CsvIndex {
+            val starts = ArrayList<Int>(); val ends = ArrayList<Int>()
+            var start = 0; var i = 0; var quoted = false; var cellStart = true
+            while(i < text.length) {
+                if(Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException()
+                val c = text[i]
+                when {
+                    c == '"' && quoted && i+1 < text.length && text[i+1] == '"' -> i++
+                    c == '"' && (quoted || cellStart) -> { quoted = !quoted; cellStart = false }
+                    c == ',' && !quoted -> cellStart = true
+                    (c == '\r' || c == '\n') && !quoted -> {
+                        starts.add(start); ends.add(i)
+                        if(c == '\r' && i+1 < text.length && text[i+1] == '\n') i++
+                        start = i+1; cellStart = true
+                    }
+                    else -> cellStart = false
+                }
+                i++
+            }
+            require(!quoted) { "CSVの引用符が閉じていません" }
+            if(start < text.length || text.isEmpty()) { starts.add(start); ends.add(text.length) }
+            return CsvIndex(text, starts.toIntArray(), ends.toIntArray())
+        }
+    }
+}
 object CsvParser {
-    fun parse(text: String): List<List<String>> {
-        val rows = mutableListOf<List<String>>()
-        var cells=0
-        var row = mutableListOf<String>(); val cell = StringBuilder(); var quoted = false; var i = 0
-        fun finishCell() { require(++cells<=500_000){"CSVのセル数が資源上限を超えました。分割して閲覧してください"}; row.add(cell.toString()); cell.setLength(0) }
-        fun finishRow() { finishCell(); rows.add(row); row = mutableListOf() }
-        while (i < text.length) {
+    fun parse(text: String): List<List<String>> = CsvIndex.build(text).let { index -> (0 until index.size).map(index::row) }
+    internal fun parseRow(text: String, start: Int, end: Int): List<String> {
+        val cells = ArrayList<String>(); val cell = StringBuilder(); var quoted = false; var i = start
+        while(i < end) {
             val c = text[i]
             when {
-                c == '"' && quoted && i + 1 < text.length && text[i + 1] == '"' -> { cell.append('"'); i++ }
+                c == '"' && quoted && i+1 < end && text[i+1] == '"' -> { cell.append('"'); i++ }
                 c == '"' && (quoted || cell.isEmpty()) -> quoted = !quoted
-                c == ',' && !quoted -> finishCell()
-                (c == '\n' || c == '\r') && !quoted -> { finishRow(); if(c == '\r' && i+1 < text.length && text[i+1] == '\n') i++ }
+                c == ',' && !quoted -> { cells.add(cell.toString()); cell.setLength(0) }
                 else -> cell.append(c)
             }; i++
         }
-        require(!quoted) { "CSVの引用符が閉じていません" }
-        if(cell.isNotEmpty() || row.isNotEmpty() || text.isEmpty() || text.last() == ',') finishRow()
-        return rows
+        cells.add(cell.toString()); return cells
     }
 }
 
@@ -62,7 +87,7 @@ object SafeZip {
     const val MAX_ENTRIES = 2048
     fun safePath(path: String): String {
         require(path.isNotBlank() && !path.startsWith('/') && !path.contains('\\') && !Regex("^[A-Za-z]:").containsMatchIn(path)) { "ZIP内の不正なパス: $path" }
-        require(path.split('/').none { it == ".." || it == "." } && !path.contains('\u0000')) { "ZIP内のパス逸脱を拒否しました" }
+        require(path.removeSuffix("/").split('/').none { it.isEmpty() || it == ".." || it == "." } && !path.contains('\u0000')) { "ZIP内のパス逸脱を拒否しました" }
         return path
     }
     fun read(input: InputStream): LinkedHashMap<String, ByteArray> {
@@ -84,7 +109,8 @@ object SafeZip {
     }
     fun write(files: List<Pair<String, ByteArray>>, output: OutputStream) {
         require(files.size <= MAX_ENTRIES && files.sumOf { it.second.size.toLong() } <= MAX_TOTAL) { "ZIPのサイズ制限を超えました" }
-        val paths = files.map { safePath(it.first) }; require(paths.distinct().size == paths.size) { "同名パスがあります。名前を変更してください" }
+        require(files.all{it.second.size.toLong()<=MAX_ENTRY}){"ZIP内の単体ファイルが24MiBを超えています"}
+        val paths = files.map { require(!it.first.endsWith('/')){"ファイルのパスはディレクトリ名にできません"};safePath(it.first) }; require(paths.distinct().size == paths.size) { "同名パスがあります。名前を変更してください" }
         ZipOutputStream(BufferedOutputStream(output)).use { zip -> files.forEach { (path, bytes) -> zip.putNextEntry(ZipEntry(path)); zip.write(bytes); zip.closeEntry() } }
     }
 }
@@ -117,4 +143,53 @@ object DocumentBytes {
         return if(mixed) raw to false else TextCodec.convertNewlines(raw,"LF") to true
     }
     fun encode(doc: Document, text: String): ByteArray = TextCodec.encode(if(doc.normalizedNewlines) TextCodec.convertNewlines(text,doc.newline) else text,doc.encoding)
+}
+
+/** Literal substring candidates across Japanese and Latin text; exact matching remains authoritative. */
+object BodyTokens {
+    private fun token(a: Char, b: Char) = "t" + a.code.toString(16).padStart(4,'0') + b.code.toString(16).padStart(4,'0')
+    fun index(text: String): String {
+        if(text.length>1024*1024)return ""
+        val tokens=LinkedHashSet<String>()
+        for(i in 0 until text.length-1) {
+            tokens.add(token(text[i].uppercaseChar().lowercaseChar(),text[i+1].uppercaseChar().lowercaseChar()))
+            // Empty marks documents requiring a scan; never silently exclude them.
+            if(tokens.size>50_000) return ""
+        }
+        return tokens.joinToString(" ")
+    }
+    fun query(text: String): String? = if(text.length<2 || text.take(2).any{Character.isSurrogate(it)}) null else token(text[0].uppercaseChar().lowercaseChar(),text[1].uppercaseChar().lowercaseChar())
+}
+
+/** A bounded native edit window; immutable full-document snapshots remain the save authority. */
+object EditorWindow {
+    const val SIZE=128*1024
+    fun bounds(text:String,cursor:Int,start:Int,end:Int):Pair<Int,Int> {
+        val original=bounds(text.length,cursor,start,end)
+        var left=original.first;var right=original.second
+        if(left>0 && left<text.length && (Character.isLowSurrogate(text[left]) && Character.isHighSurrogate(text[left-1]) || text[left]=='\n' && text[left-1]=='\r'))left--
+        right=minOf(right,left+SIZE)
+        if(text.length<=1024*1024)return original
+        if(right<text.length && right>left && (Character.isHighSurrogate(text[right-1]) && Character.isLowSurrogate(text[right]) || text[right-1]=='\r' && text[right]=='\n'))right--
+        return left to right
+    }
+    fun bounds(length:Int,cursor:Int,start:Int,end:Int):Pair<Int,Int> {
+        if(length<=1024*1024) return 0 to length
+        if(end>start && cursor>=start && cursor<end && end<=length) return start to end
+        val left=(cursor/SIZE*SIZE).coerceAtMost((length-1).coerceAtLeast(0))
+        return left to (left+SIZE).coerceAtMost(length)
+    }
+}
+
+data class TextMetrics(val lines:Int,val line:Int,val column:Int) {
+    companion object {
+        fun calculate(text:String,cursor:Int):TextMetrics {
+            val position=cursor.coerceIn(0,text.length);var lines=1;var line=1;var previous=-1
+            for(i in text.indices) {
+                if(i%8192==0 && Thread.currentThread().isInterrupted)throw java.util.concurrent.CancellationException()
+                if(text[i]=='\n') {lines++;if(i<position){line++;previous=i}}
+            }
+            return TextMetrics(lines,line,position-previous)
+        }
+    }
 }
