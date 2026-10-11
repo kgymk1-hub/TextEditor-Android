@@ -2,7 +2,9 @@
 
 Kotlin / Jetpack ComposeのAndroidネイティブ版です。日本語UI、Android 8.0（API 26）以上、compileSdk / targetSdk 36。PWAをWebViewで包む構成ではなく、入力はネイティブ、WebViewはプレビュー専用です。
 
-**現在は検証用の開発版です。仕様書の全受入試験を完了した正式版ではありません。** 実装・ローカル自動検証の結果を同梱しています。実機受入と所有者による本番署名は別途必要です。元のPWAリポジトリは参照のみです。
+**現在は検証用の開発版です。仕様書の全受入試験を完了した正式版ではありません。** 自動テスト61件とLintの検証を完了し、配布用の鍵で署名したAPKを [GitHub Releases](https://github.com/kgymk1-hub/TextEditor-Android/releases) で配布します。実機受入は未実施です。元のPWAリポジトリは参照のみです。
+
+インストール用ファイルは `PocketTextEditor-release.apk` です。ダウンロード後、Androidの案内に従って使用したブラウザー／ファイルアプリからのインストールを許可してください。AABは直接インストールするためのファイルではありません。デバッグ版から切り替える場合は、署名が異なるため、アプリ内でバックアップを出力してから旧版を削除し、署名済み版でインポートしてください。
 
 ## 実装した機能
 
@@ -42,7 +44,7 @@ python scripts/build-local.py --java /path/to/jdk17 --sdk /path/to/android-sdk -
 - `app/build/outputs/apk/release/app-release-unsigned.apk`：署名前のリリースAPK。
 - `app/build/outputs/bundle/release/app-release.aab`：署名前のAAB。
 
-リリース署名鍵は含めていません。正式配布には所有者の鍵でAndroid Studioの **Generate Signed Bundle / APK** を実行してください。デバッグ版は正式版への更新に同一署名を利用できない場合があります。
+秘密のリリース署名鍵は含めていません。GitHub ReleasesのAPKは配布用の鍵で署名済みです。再ビルド・今後の更新には同じ鍵を使用します。署名と鍵の保管方法は [RELEASE.md](docs/RELEASE.md) を参照してください。
 
 ## 使い方
 
@@ -61,7 +63,7 @@ HTMLは `href` / `src` の相対参照に対応する文書を使用します。
 - 比較は行番号による簡易表示、補完は単語候補です。言語サーバーや構文木による高度な意味解析は含みません。
 - 日本語IME、物理キーボード、TalkBack、回転、OPPO Reno 5A（Android 12）、低性能機、新しいAndroidのSAF・WebView、入力のp95性能は実機受入の対象です。ホスト上の自動テストを端末性能の測定とは扱いません。
 - クラウド提供元のオフライン／権限取消／容量不足、強制終了は実機で確認してください。保存先提供元が非アトミックな場合、原本の完全ロールバックは保証できません。
-- リリースAPK／AABは生成します。本番署名は所有者の鍵で行う設定と手順を [RELEASE.md](docs/RELEASE.md) に用意しています。鍵の提供がないため成果物は署名前です。ストアへの公開は行っていません。
+- GitHub配布用の署名済みAPK／AABを生成しました。実機受入は未実施のため検証版として配布します。ストアへの公開は行っていません。
 
 受入手順は [TESTING.md](docs/TESTING.md)、構造は [ARCHITECTURE.md](docs/ARCHITECTURE.md)、基準は [仕様書](docs/SPEC-v1.0.md) を参照してください。
 
