@@ -1,0 +1,15 @@
+{
+  "commit": "a4c72bc08d64b3f90a27b5db27c7edfa95688451",
+  "tests": 61,
+  "lint_warnings": {
+    "debug": 21,
+    "release": 21
+  },
+  "device_tests": false,
+  "release_signed": true,
+  "app_build_commit": "41ae059b8ecb977b1376118e547ac619d69cd4f5",
+  "version_name": "1.0.0-dev",
+  "version_code": 1,
+  "certificate_sha256": "9815e7dc833b80e700d3ac6d7e83f4fd094bf5d1393e9b87b17241085cecd07b",
+  "key_backed_up_to_github_secrets": false
+}
