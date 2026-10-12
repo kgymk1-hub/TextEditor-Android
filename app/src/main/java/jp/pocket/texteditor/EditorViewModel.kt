@@ -219,7 +219,11 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
         }
         persistTabs()
     }
-    fun close(id:String)=runTask{detach(id,false)}
+    fun close(id:String)=runTask{if(_tabs.value.any{it.document.id==id})detach(id,false)}
+    fun closeAll(ids:List<String>)=runTask {
+        // Close only the tabs included in the confirmation, preserving newly opened tabs.
+        ids.distinct().forEach { id -> if(_tabs.value.any{it.document.id==id})detach(id,false) }
+    }
     fun move(id: String, delta: Int) = runTask { val list=_tabs.value.toMutableList(); val i=list.indexOfFirst {it.document.id==id}; val j=(i+delta).coerceIn(0,list.lastIndex); if(i>=0) { val s=list.removeAt(i); list.add(j,s); _tabs.value=list; persistTabs() } }
     fun duplicate(doc: Document) = runTask { val s=_tabs.value.find {it.document.id==doc.id && !it.unloaded}; val text=s?.text ?: withContext(Dispatchers.IO){repo.read(doc.body)}; newMemo(text,"コピー_${doc.name}") }
     fun trash(id:String)=runTask{detach(id,true)}

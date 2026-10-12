@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "jp.pocket.texteditor"
     compileSdk = 36
-    defaultConfig { applicationId = "jp.pocket.texteditor"; minSdk = 26; targetSdk = 36; versionCode = 1; versionName = "1.0.0-dev"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "jp.pocket.texteditor"; minSdk = 26; targetSdk = 36; versionCode = 2; versionName = "1.0.1-dev"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     testOptions { unitTests.isIncludeAndroidResources = true }
     buildFeatures { compose = true; buildConfig = true }
     val ownerStore=System.getenv("POCKET_SIGN_STORE")

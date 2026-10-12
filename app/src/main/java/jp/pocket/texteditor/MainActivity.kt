@@ -21,6 +21,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -47,6 +49,8 @@ fun PocketApp(vm:EditorViewModel) {
     var javascript by remember{mutableStateOf(false)};var previewVersion by remember{mutableIntStateOf(0)};var editor by remember{mutableStateOf<NativeEditor?>(null)}
     var selected by remember{mutableStateOf(setOf<String>())};var target by rememberSaveable{mutableStateOf("")}
     var pending by rememberSaveable{mutableStateOf("")};var pendingId by rememberSaveable{mutableStateOf("")};var pendingIds by rememberSaveable{mutableStateOf(arrayListOf<String>())}
+    var menuGroup by rememberSaveable{mutableStateOf("")}
+    var closeIds by rememberSaveable{mutableStateOf<List<String>>(emptyList())}
     var pendingArchive by rememberSaveable{mutableStateOf<String?>(null)}
     var pendingEncoding by rememberSaveable{mutableStateOf<String?>(null)}
     val snackbar=remember{SnackbarHostState()};val message by vm.message.collectAsState()
@@ -101,6 +105,7 @@ fun PocketApp(vm:EditorViewModel) {
         "ライセンス"->dialog="licenses";"設定"->dialog="settings";"タブ一覧"->dialog="tabs";"履歴"->dialog="history";"文字コード・改行"->dialog="format";"指定行へ移動"->dialog="jump"
         "保存内容と比較"->dialog="diff";"ファイル間比較"->dialog="fileDiff";"横断検索"->dialog="crossSearch";"補完候補"->dialog="completion"
         "名前変更"->{target=s?.document?.id ?: "";dialog="rename"};"複製"->s?.let{vm.duplicate(it.document)}
+        "全タブを閉じる"->{closeIds=tabs.map{it.document.id};dialog="closeAll"}
         "閉じる"->{target=s?.document?.id ?: "";dialog="close"};"閉じたタブを復元"->dialog="closed"
         "外部ファイルを削除"->{target=s?.document?.id.orEmpty();dialog="deleteExternal"};"本文を削除"->dialog="clear";"フルスクリーン"->full=!full;"分割編集"->dialog="splitPick";"分割表示"->{split=!split;if(!split){secondaryId="";vm.endSplit()}}
         "JavaScript許可"->dialog="javascript";"プレビュー更新"->{previewVersion++}
@@ -128,15 +133,23 @@ fun PocketApp(vm:EditorViewModel) {
                     HomeList(docs,prefs.sort,selected,{selected=it},onOpen={vm.openMemo(it);home=false},onFavorite={vm.favorite(it)},onTrash={target=it.id;dialog="trash"},onRestore={vm.restoreTrash(it)},onRename={target=it.id;dialog="rename"},onDuplicate={vm.duplicate(it)},onSort={vm.setting("sort",it)})
                 } else {
                     if(!full) {
-                        Row(Modifier.fillMaxWidth().heightIn(min=56.dp),verticalAlignment=Alignment.CenterVertically){TextButton(onClick={home=true;vm.flushAll()}){Text("一覧")};Column(Modifier.weight(1f)){Text(session.document.name,maxLines=1,style=MaterialTheme.typography.titleMedium);Text(session.status,style=MaterialTheme.typography.labelSmall,color=if(session.status.contains("失敗") || session.status.contains("競合"))MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)};TextButton(onClick={editor?.undo()}){Text("↶")};TextButton(onClick={editor?.redo()}){Text("↷")};TextButton(onClick={action("保存")}){Text("保存")};Box{TextButton(onClick={menu=true}){Text("⋮")};DropdownMenu(expanded=menu,onDismissRequest={menu=false},modifier=Modifier.heightIn(max=480.dp)){listOf("名前を付けて保存","コピーを保存","開く","新規","タブ一覧","検索","横断検索","履歴","文字コード・改行","指定行へ移動","保存内容と比較","ファイル間比較","補完候補","現在タブコピー","全タブ結合コピー","選択タブ結合コピー","本文を共有","ファイルを共有","全タブZIP共有","ZIPを開く","全タブZIP保存","選択タブZIP保存","元ZIPへ保存","ZIPのコピーを保存","フォルダを開く","複製","名前変更","閉じる","閉じたタブを復元","本文を削除","外部ファイルを削除","切り取り","コピー","貼り付け","行複製","行削除","行↑","行↓","フルスクリーン","分割表示","分割編集","JavaScript許可","ライセンス","設定").forEach{label->DropdownMenuItem(text={Text(label)},onClick={action(label)})}}}}
+                        Row(Modifier.fillMaxWidth().heightIn(min=56.dp),verticalAlignment=Alignment.CenterVertically){TextButton(onClick={home=true;vm.flushAll()}){Text("一覧")};Column(Modifier.weight(1f)){Text(session.document.name,maxLines=1,style=MaterialTheme.typography.titleMedium);Text(session.status,style=MaterialTheme.typography.labelSmall,color=if(session.status.contains("失敗") || session.status.contains("競合"))MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)};TextButton(onClick={editor?.undo()}){Text("↶")};TextButton(onClick={editor?.redo()}){Text("↷")};TextButton(onClick={action("保存")}){Text("保存")};Box{TextButton(onClick={menu=true}){Text("⋮")};DropdownMenu(expanded=menu,onDismissRequest={menu=false},modifier=Modifier.heightIn(max=480.dp)){editorMenuGroups.keys.forEach{group->DropdownMenuItem(text={Text("$group ›")},onClick={menu=false;menuGroup=group;dialog="menuGroup"})}}}}
                         Text("${session.document.kind} · ${session.document.encoding} · ${session.document.newline} · ${session.document.uri ?: session.document.path}",style=MaterialTheme.typography.labelSmall,maxLines=2,modifier=Modifier.padding(horizontal=12.dp))
-                        LazyRow {items(tabs,key={it.document.id}){tab->FilterChip(selected=tab.document.id==active,onClick={vm.activate(tab.document.id)},label={Text(tab.document.name+if(tab.document.kind!="MEMO" && tab.document.revision!=tab.document.savedRevision)" •"else "")},modifier=Modifier.padding(horizontal=4.dp))}}
+                        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                            LazyRow(Modifier.weight(1f)) {items(tabs,key={it.document.id}){tab->
+                                Row(verticalAlignment=Alignment.CenterVertically) {
+                                    FilterChip(selected=tab.document.id==active,onClick={vm.activate(tab.document.id)},label={Text(tab.document.name+if(tab.document.kind!="MEMO" && tab.document.revision!=tab.document.savedRevision)" •"else "")},modifier=Modifier.padding(start=4.dp))
+                                    IconButton(onClick={target=tab.document.id;dialog="close"},modifier=Modifier.semantics{contentDescription="${tab.document.name}のタブを閉じる"}){Text("✕")}
+                                }
+                            }}
+                            TextButton(onClick={action("全タブを閉じる")},modifier=Modifier.semantics{contentDescription="全タブを閉じる"}){Text("✕ 全タブ")}
+                        }
                         Row(Modifier.horizontalScroll(rememberScrollState()),verticalAlignment=Alignment.CenterVertically){val ext=session.document.name.substringAfterLast('.').lowercase();val modes=listOf("編集")+when(ext){"html","htm"->listOf("HTML");"csv"->listOf("CSV");"md"->listOf("Markdown");else->emptyList()};modes.forEach{mode->TextButton(onClick={vm.mode(session.document.id,mode)}){Text(if(mode==session.document.mode)"● $mode"else mode)}};if(session.document.mode!="編集")TextButton(onClick={previewVersion++}){Text("更新")}}
                     } else TextButton(onClick={full=false}){Text("操作を表示")}
                     BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                         val viewportWidth=maxWidth
                         Row(Modifier.fillMaxSize()) {
-                        if(viewportWidth>900.dp) LazyColumn(Modifier.width(150.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceVariant)){items(tabs,key={it.document.id}){tab->TextButton(onClick={vm.activate(tab.document.id)}){Text(tab.document.name)}}}
+                        if(viewportWidth>900.dp) LazyColumn(Modifier.width(150.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceVariant)){items(tabs,key={it.document.id}){tab->Row(verticalAlignment=Alignment.CenterVertically){TextButton(onClick={vm.activate(tab.document.id)},modifier=Modifier.weight(1f)){Text(tab.document.name)};IconButton(onClick={target=tab.document.id;dialog="close"},modifier=Modifier.semantics{contentDescription="${tab.document.name}のタブを閉じる"}){Text("✕")}}}}
                         Box(Modifier.weight(1f).fillMaxHeight()) {
                         val showPreview=session.document.mode!="編集"
                         val secondary=tabs.find{it.document.id==secondaryId && it.document.id!=session.document.id}
@@ -166,6 +179,7 @@ fun PocketApp(vm:EditorViewModel) {
             }
         }
         when(dialog){
+            "menuGroup"->MenuDialog(menuGroup,editorMenuGroups[menuGroup].orEmpty(),{dialog="";action(it)},{dialog=""})
             "homeMenu"->MenuDialog("ファイル操作",listOf("ZIPを開く","フォルダを開く","全タブZIP保存","バックアップを書き出す","バックアップを読み込む","閉じたタブを復元","ライセンス","選択文書ZIP保存","選択文書結合コピー"),{dialog="";action(it)},{dialog=""})
             "licenses"->TextDialog("ライブラリライセンス",context.assets.open("THIRD_PARTY_NOTICES.txt").bufferedReader().use{it.readText()}){dialog=""}
             "settings"->SettingsDialog(prefs,{key,value->vm.setting(key,value)},{dialog=""})
@@ -179,7 +193,8 @@ fun PocketApp(vm:EditorViewModel) {
             "trash"->ConfirmDialog("ごみ箱へ移動","本文は${prefs.trashDays}日間保持されます。未保存の内容も履歴に退避します",{vm.trash(target);dialog=""},{dialog=""})
             "deleteExternal"->ConfirmDialog("外部ファイルを削除","${tabs.find{it.document.id==target}?.document?.uri.orEmpty()} を提供元から削除します。本文を内部退避し、ごみ箱に保護します",{vm.deleteExternal(target);dialog=""},{dialog=""})
             "clear"->ConfirmDialog("本文を削除","現在の本文を履歴に保護してから削除します",{session?.let{s->vm.runTask{vm.repo.snapshot(s.document,s.text,"本文削除前",prefs.histories);vm.edit(s.document.id,"",0,0,0);vm.flush(s.document.id)}};dialog=""},{dialog=""})
-            "close"->ConfirmDialog("タブを閉じる","${tabs.find{it.document.id==target}?.status.orEmpty()}。本文を内部退避して閉じます。外部ファイルには保存しません",{vm.close(target);dialog=""},{dialog=""})
+            "closeAll"->ConfirmDialog("全タブを閉じる","${closeIds.size}個のタブを閉じますか？本文を内部退避して閉じます。外部ファイルには保存しません。閉じたタブは復元できます",{vm.closeAll(closeIds.toList());dialog=""},{dialog=""},"全タブを閉じる")
+            "close"->ConfirmDialog("タブを閉じる","「${tabs.find{it.document.id==target}?.document?.name.orEmpty()}」を閉じますか？${tabs.find{it.document.id==target}?.status.orEmpty()}。本文を内部退避して閉じます。外部ファイルには保存しません",{vm.close(target);dialog=""},{dialog=""})
             "tabs"->TabDialog(tabs,selected,{selected=it},{vm.activate(it);dialog=""},{vm.move(it,-1)},{vm.move(it,1)},{target=it;dialog="close"},{dialog=""})
             "closed"->ClosedDialog(docs.filter{it.tabOrder<0 && it.deleted==null},{vm.openMemo(it);dialog="";home=false},{dialog=""})
             "diff"->session?.let{DiffDialog(it,vm,null,{dialog=""})}

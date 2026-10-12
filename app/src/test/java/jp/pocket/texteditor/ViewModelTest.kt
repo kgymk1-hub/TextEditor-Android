@@ -44,6 +44,43 @@ class ViewModelTest {
         await{future.isDone};return future.get()
     }
     private fun memo(text:String,name:String="test.txt"):Session{val count=vm.tabs.value.size;vm.newMemo(text,name);await{vm.tabs.value.size==count+1 && vm.current()?.status=="保存済み"};return vm.current()!!}
+    @Test fun closeAllPreservesLatestTextAndAllowsRestoringTabs() {
+        val first=memo("original","first.txt");val second=memo("second","second.txt")
+        vm.edit(second.document.id,"unsaved latest text",3,3,0)
+        vm.closeAll(listOf(first.document.id,second.document.id))
+        await{vm.tabs.value.isEmpty()}
+        assertNull(vm.active.value)
+        val stored=background{vm.repo.dao.get(second.document.id)!!}
+        assertEquals(-1,stored.tabOrder);assertNull(stored.deleted)
+        assertEquals("unsaved latest text",background{vm.repo.read(stored.body)})
+        vm.openMemo(stored);await{vm.current()?.document?.id==stored.id}
+        assertEquals("unsaved latest text",vm.current()!!.text)
+    }
+    @Test fun closeAllBacksUpExternalEditsWithoutWritingExternalFile() {
+        provider.file.writeText("external original")
+        vm.openUri(Uri.parse("content://test.files/document"),3,"UTF-8")
+        await{vm.current()?.document?.kind=="EXTERNAL" && vm.current()?.status=="保存済み"}
+        val external=vm.current()!!
+        vm.edit(external.document.id,"external unsaved edit",0,0,0)
+        vm.closeAll(listOf(external.document.id))
+        await{vm.tabs.value.isEmpty()}
+        assertEquals("external original",provider.file.readText())
+        val stored=background{vm.repo.dao.get(external.document.id)!!}
+        assertEquals("external unsaved edit",background{vm.repo.read(stored.body)})
+        assertTrue(stored.revision>stored.savedRevision)
+    }
+
+    @Test fun closeAllOnlyClosesConfirmedTabs() {
+        val first=memo("first");val second=memo("second")
+        val confirmed=listOf(first.document.id,second.document.id)
+        val later=memo("opened after confirmation")
+        vm.close(first.document.id);await{vm.tabs.value.size==2}
+        vm.closeAll(confirmed)
+        await{vm.tabs.value.size==1}
+        assertEquals(later.document.id,vm.current()!!.document.id)
+        assertEquals("opened after confirmation",vm.current()!!.text)
+    }
+
     @Test fun closingActiveTabReloadsUnloadedBody() {
         val original="本文".repeat(600_000);val first=memo(original,"large.txt");val second=memo("small","small.txt")
         vm.activate(second.document.id);await{vm.session(first.document.id).unloaded}
