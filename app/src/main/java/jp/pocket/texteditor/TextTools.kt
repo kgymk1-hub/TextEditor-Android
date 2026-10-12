@@ -34,23 +34,23 @@ object TextCodec {
 }
 
 /** Index offsets only; cells are decoded for the visible row, never for the whole table. */
-class CsvIndex private constructor(private val text: String, private val starts: IntArray, private val ends: IntArray) {
+class CsvIndex private constructor(private val text: String, private val starts: IntArray, private val ends: IntArray, val columns:Int) {
     val size: Int get() = starts.size
     fun row(index: Int): List<String> = CsvParser.parseRow(text, starts[index], ends[index])
     fun matching(query: String): List<Int> = (0 until size).filter { if(Thread.currentThread().isInterrupted)throw java.util.concurrent.CancellationException(); query.isBlank() || row(it).any { cell -> cell.contains(query, true) } }
     companion object {
         fun build(text: String): CsvIndex {
             val starts = ArrayList<Int>(); val ends = ArrayList<Int>()
-            var start = 0; var i = 0; var quoted = false; var cellStart = true
+            var start = 0; var i = 0; var quoted = false; var cellStart = true;var columns=1;var maxColumns=1
             while(i < text.length) {
                 if(Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException()
                 val c = text[i]
                 when {
                     c == '"' && quoted && i+1 < text.length && text[i+1] == '"' -> i++
                     c == '"' && (quoted || cellStart) -> { quoted = !quoted; cellStart = false }
-                    c == ',' && !quoted -> cellStart = true
+                    c == ',' && !quoted -> {cellStart = true;columns++}
                     (c == '\r' || c == '\n') && !quoted -> {
-                        starts.add(start); ends.add(i)
+                        starts.add(start); ends.add(i);maxColumns=maxOf(maxColumns,columns);columns=1
                         if(c == '\r' && i+1 < text.length && text[i+1] == '\n') i++
                         start = i+1; cellStart = true
                     }
@@ -60,7 +60,7 @@ class CsvIndex private constructor(private val text: String, private val starts:
             }
             require(!quoted) { "CSVの引用符が閉じていません" }
             if(start < text.length || text.isEmpty()) { starts.add(start); ends.add(text.length) }
-            return CsvIndex(text, starts.toIntArray(), ends.toIntArray())
+            return CsvIndex(text, starts.toIntArray(), ends.toIntArray(),maxOf(maxColumns,columns))
         }
     }
 }

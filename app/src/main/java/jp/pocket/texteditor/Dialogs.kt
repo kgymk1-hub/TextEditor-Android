@@ -51,6 +51,8 @@ fun SearchDialog(s: Session, vm: EditorViewModel, editor: NativeEditor?, dismiss
     var case by remember { mutableStateOf(false) }
     var regex by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf(false) }
+    var selectedStart by remember(s.document.id,query,case,regex){mutableIntStateOf(-1)}
+    var selectedEnd by remember(s.document.id,query,case,regex){mutableIntStateOf(-1)}
     var ranges by remember { mutableStateOf<List<IntRange>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(query,case,regex,s.text) {
@@ -58,15 +60,15 @@ fun SearchDialog(s: Session, vm: EditorViewModel, editor: NativeEditor?, dismiss
         catch(e:Exception) { ranges=emptyList();error=e.message }
     }
     fun jump(next:Boolean) {
-        val pos=s.document.selection
-        val range=if(next) ranges.firstOrNull{it.first>=pos && it.first!=s.document.cursor} ?: ranges.firstOrNull()
-                  else ranges.lastOrNull{it.first<s.document.cursor} ?: ranges.lastOrNull()
-        range?.let{vm.updatePosition(s.document.id,it.first,(it.last+1).coerceAtLeast(it.first),s.document.scroll)}
+        val pos=if(selectedEnd>=0)selectedEnd else s.document.selection
+        val range=if(next) ranges.firstOrNull{it.first>=pos && it.first!=selectedStart} ?: ranges.firstOrNull()
+                  else ranges.lastOrNull{it.first<(if(selectedStart>=0)selectedStart else s.document.cursor)} ?: ranges.lastOrNull()
+        range?.let{selectedStart=it.first;selectedEnd=(it.last+1).coerceAtLeast(it.first);vm.updatePosition(s.document.id,selectedStart,selectedEnd,s.document.scroll)}
     }
     AlertDialog(
         onDismissRequest=dismiss,
         title={Text("検索・置換")},
-        text={Column {
+        text={Column(Modifier.heightIn(max=360.dp).verticalScroll(rememberScrollState())) {
             OutlinedTextField(query,{query=it},label={Text("検索")},singleLine=true)
             OutlinedTextField(replacement,{replacement=it},label={Text("置換")},singleLine=true)
             Toggle("大文字小文字区別",case,{case=it})
@@ -78,13 +80,13 @@ fun SearchDialog(s: Session, vm: EditorViewModel, editor: NativeEditor?, dismiss
             }
             Row {
                 TextButton(onClick={
-                    val found=ranges.firstOrNull{it.first==s.document.cursor}
+                    val found=ranges.firstOrNull{it.first==selectedStart}
                     if(found==null) jump(true)
                     else {
                         try {
-                            val value=if(regex) SearchTools.regex(query,case,true).replace(s.text.substring(found.first,found.last+1),replacement) else replacement
-                            editor?.setSelection(found.first,(found.last+1).coerceAtLeast(found.first))
-                            editor?.insert(value)
+                            val result=SingleReplacement.calculate(s.text,found.first,query,replacement,case,regex)
+                            if(editor?.replaceForDocument(s.document.id,s.document.revision,result)!=true)vm.replaceOne(s.document.id,s.document.revision,found.first,query,replacement,case,regex)
+                            selectedStart=-1;selectedEnd=result.cursor
                         } catch(e:Exception) { vm.message.value=e.message }
                     }
                 }){Text("1件置換")}
@@ -122,7 +124,7 @@ fun SettingsDialog(p:Preferences,set:(String,Any)->Unit,dismiss:()->Unit){
         OutlinedTextField(symbols,{symbols=it},label={Text("記号ボタン（空白区切り・順序変更可）")});TextButton(onClick={set("symbols",symbols)}){Text("記号配置を保存")}
         OutlinedTextField(shortcuts,{shortcuts=it},label={Text("Ctrlショートカット（例 S=保存）")});TextButton(onClick={set("shortcuts",shortcuts)}){Text("キー割当を保存")}
         Stepper("自動退避 ms",p.autosave,100,5000,100){set("autosave",it)};Stepper("履歴数",p.histories,1,100,5){set("histories",it)};Stepper("履歴容量 MB",p.historyMb,8,256,8){set("historyMb",it)};Stepper("履歴保持日数",p.historyDays,1,365,7){set("historyDays",it)};Stepper("ごみ箱保持日数",p.trashDays,1,365,7){set("trashDays",it)};Toggle("前回タブを復元",p.restore){set("restore",it)}
-        Choice("既定文字コード",p.defaultEncoding,listOf("UTF-8","UTF-8 BOM","Shift_JIS")){set("encoding",it)};Choice("既定改行",p.defaultNewline,listOf("LF","CRLF","CR")){set("newline",it)}
+        Choice("読込の既定文字コード",p.defaultEncoding,listOf("UTF-8","UTF-8 BOM","Shift_JIS")){set("encoding",it)};Choice("書出しの既定文字コード",p.outputEncoding,listOf("元の文字コード","UTF-8","UTF-8 BOM","Shift_JIS")){set("outputEncoding",it)};Text("元ファイルへの上書きは文書の文字コードを保持します。書出し設定は別名保存・コピー・新規ZIPに適用します。",style=MaterialTheme.typography.bodySmall);Choice("既定改行",p.defaultNewline,listOf("LF","CRLF","CR")){set("newline",it)}
         Stepper("Tab幅",p.indent,1,8){set("indent",it)};Toggle("Tab文字を使用",p.tabs){set("tabs",it)};Toggle("自動インデント",p.autoIndent){set("autoIndent",it)};Toggle("括弧自動補完",p.brackets){set("brackets",it)}
         Toggle("CSVの先頭行をヘッダー",p.csvHeader){set("csvHeader",it)};Toggle("プレビュー自動更新",p.previewAuto){set("previewAuto",it)};Toggle("PWA互換・全タブCSS/JS合成",p.compatibility){set("compatibility",it)}
         Stepper("大容量判定 MB",p.largeMb,1,20){set("largeMb",it)}
@@ -137,4 +139,9 @@ fun EncodingReadDialog(uri:android.net.Uri,vm:EditorViewModel,confirm:(String)->
     var preview by remember{mutableStateOf("読込中…")};var valid by remember{mutableStateOf(false)}
     LaunchedEffect(encoding,uri) {valid=false;try{preview=withContext(Dispatchers.IO){TextCodec.decode(vm.repo.bytes(uri),encoding).text.take(16_384)};valid=true}catch(e:Exception){preview="読込できません：${e.message}"}}
     AlertDialog(onDismissRequest=dismiss,title={Text("文字コードを再指定")},text={Column{Choice("読み込み",encoding,listOf("UTF-8","Shift_JIS")){encoding=it};Text("プレビュー（先頭16KB）",style=MaterialTheme.typography.labelSmall);Text(preview,modifier=Modifier.heightIn(max=280.dp).verticalScroll(rememberScrollState()),style=MaterialTheme.typography.bodySmall)}},confirmButton={TextButton(onClick={confirm(encoding)},enabled=valid){Text("この文字コードで開く")}},dismissButton={TextButton(onClick=dismiss){Text("キャンセル")}})
+}
+
+@Composable
+fun ZipNamesDialog(changes:String,confirm:()->Unit,dismiss:()->Unit) {
+    AlertDialog(onDismissRequest=dismiss,title={Text("ZIPの重複名を解消")},text={Column{Text("次の名前で書き出します。元の文書名は変わりません。");LazyColumn(Modifier.heightIn(max=360.dp)){items(changes.lines()){Text(it,Modifier.padding(vertical=4.dp))}}}},confirmButton={TextButton(onClick=confirm){Text("この名前で続ける")}},dismissButton={TextButton(onClick=dismiss){Text("キャンセル")}})
 }

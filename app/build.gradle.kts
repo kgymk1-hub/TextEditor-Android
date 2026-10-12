@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "jp.pocket.texteditor"
     compileSdk = 36
-    defaultConfig { applicationId = "jp.pocket.texteditor"; minSdk = 26; targetSdk = 36; versionCode = 2; versionName = "1.0.1-dev"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+    defaultConfig { applicationId = "jp.pocket.texteditor"; minSdk = 26; targetSdk = 36; versionCode = 3; versionName = "1.0.2-dev"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     testOptions { unitTests.isIncludeAndroidResources = true }
     buildFeatures { compose = true; buildConfig = true }
     val ownerStore=System.getenv("POCKET_SIGN_STORE")
@@ -48,6 +48,8 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
 tasks.withType<Test>().configureEach {

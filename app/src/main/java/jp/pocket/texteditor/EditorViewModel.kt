@@ -28,6 +28,7 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
     val message = MutableStateFlow<String?>(null)
     val conflict = MutableStateFlow<Conflict?>(null)
     val zipChoice = MutableStateFlow<ZipChoice?>(null)
+    private var retainedZip:ZipChoice?=null
     private val autosaves = mutableMapOf<String,Job>(); private val locks = java.util.concurrent.ConcurrentHashMap<String,Mutex>()
     private val scope = CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
     private val ready = MutableStateFlow(false)
@@ -56,7 +57,7 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
         ready.value=true
     } }
     fun newMemo(text: String="", name: String="無題.txt") = runTask {
-        val d=Document(name=name,path=name,encoding=preferences.value.defaultEncoding,newline=preferences.value.defaultNewline,tabOrder=_tabs.value.size,active=true)
+        val d=Document(name=name,path=name,encoding=preferences.value.outputEncoding.takeUnless{it=="元の文字コード"} ?: "UTF-8",newline=preferences.value.defaultNewline,tabOrder=_tabs.value.size,active=true)
         _tabs.value += Session(d,text,"自動退避中"); _active.value=d.id; flush(d.id); persistTabs()
     }
     fun edit(id: String, text: String, cursor: Int, selection: Int, scroll: Int) {
@@ -148,12 +149,13 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
     } }
     fun export(id: String, uri: Uri, switch: Boolean, flags: Int) = runTask { locks.getOrPut(id){Mutex()}.withLock {
         val s=session(id); repo.persist(s.document,s.text)
-        val bytes=withContext(Dispatchers.IO){DocumentBytes.encode(s.document,s.text)}
+        val outputEncoding=PwaCompatibility.outputEncoding(s.document,preferences.value.outputEncoding)
+        val bytes=withContext(Dispatchers.IO){DocumentBytes.encode(s.document.copy(encoding=outputEncoding),s.text)}
         val hash=withContext(Dispatchers.IO){repo.writeVerified(uri,bytes)}; val name=repo.name(uri)
         if(switch) {
             try { repo.context.contentResolver.takePersistableUriPermission(uri,flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)) } catch(_:SecurityException) { message.value="保存しましたが永続権限を取得できません" }
             val body=withContext(Dispatchers.IO){repo.atomic(s.text.toByteArray())}
-            update(id){it.copy(document=it.document.copy(kind="EXTERNAL",uri=uri.toString(),name=name,path=name,zipId=null,savedRevision=s.document.revision,savedHash=hash,savedBody=body),status=if(it.document.revision==s.document.revision) "保存済み" else "自動退避中")}
+            update(id){it.copy(document=it.document.copy(kind="EXTERNAL",uri=uri.toString(),name=name,path=name,zipId=null,encoding=outputEncoding,savedRevision=s.document.revision,savedHash=hash,savedBody=body),status=if(it.document.revision==s.document.revision) "保存済み" else "自動退避中")}
             val latest=session(id); repo.persist(latest.document,latest.text)
         }
         message.value="${if(switch) "編集先を切替" else "コピーを保存"}：$name${if(name!=s.document.name) "（提供元が決定した名前）" else ""}"
@@ -230,6 +232,16 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
     fun restoreTrash(doc: Document)=runTask { repo.dao.put(doc.copy(deleted=null,updated=System.currentTimeMillis())) }
     suspend fun history(id: String)=repo.dao.history(id)
     fun restoreRevision(id: String, revision: Revision)=runTask { val s=session(id); repo.snapshot(s.document,s.text,"履歴復元前",preferences.value.histories); val text=withContext(Dispatchers.IO){repo.read(revision.body)}; assertUnchanged(s);edit(id,text,0,0,0); flush(id) }
+    fun replaceOne(id:String,expectedRevision:Long,start:Int,query:String,replacement:String,case:Boolean,regex:Boolean)=runTask {
+        val s=loadSession(id)
+        check(s.document.revision==expectedRevision){"本文が変更されています。検索を更新してください"}
+        val result=SingleReplacement.calculate(s.text,start,query,replacement,case,regex)
+        repo.snapshot(s.document,s.text,"1件置換前",preferences.value.histories)
+        assertUnchanged(s)
+        update(id){it.copy(text=s.text,unloaded=false)}
+        edit(id,result.text,result.cursor,result.cursor,s.document.scroll)
+        flush(id)
+    }
     fun replaceAll(id: String, query: String, replacement: String, case: Boolean, regex: Boolean)=runTask {
         val s=session(id); repo.snapshot(s.document,s.text,"全置換前",preferences.value.histories)
         assertUnchanged(s);val text=withContext(Dispatchers.Default){val re=SearchTools.regex(query,case,regex);if(regex)re.replace(s.text,replacement)else re.replace(s.text){replacement}};assertUnchanged(s);edit(id,text,s.document.cursor.coerceAtMost(text.length),s.document.cursor.coerceAtMost(text.length),s.document.scroll); flush(id)
@@ -242,24 +254,55 @@ class EditorViewModel(app: Application): AndroidViewModel(app) {
         val bytes=withContext(Dispatchers.IO){ repo.context.contentResolver.openInputStream(uri)?.use { it.readBounded(64*1024*1024) } ?: error("ZIPを読めません") }
         val entries=withContext(Dispatchers.IO){SafeZip.read(ByteArrayInputStream(bytes))}
         try{repo.context.contentResolver.takePersistableUriPermission(uri,flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION))}catch(_:SecurityException){}
-        val archive=Archive(UUID.randomUUID().toString(),uri.toString(),TextCodec.hash(bytes),withContext(Dispatchers.IO){repo.atomic(bytes,UUID.randomUUID().toString()+".zip")},repo.name(uri)); repo.dao.putArchive(archive); zipChoice.value=ZipChoice(archive,entries)
+        val archive=Archive(UUID.randomUUID().toString(),uri.toString(),TextCodec.hash(bytes),withContext(Dispatchers.IO){repo.atomic(bytes,UUID.randomUUID().toString()+".zip")},repo.name(uri)); repo.dao.putArchive(archive); retainedZip=ZipChoice(archive,entries);zipChoice.value=retainedZip
+    }
+    fun showZipBrowser()=runTask {
+        val archiveId=current()?.document?.zipId ?: retainedZip?.archive?.id ?: error("先にZIPを開いてください")
+        val archive=repo.dao.archive(archiveId) ?: error("ZIPがありません")
+        if(retainedZip?.archive?.id!=archiveId || retainedZip?.archive?.hash!=archive.hash) {
+            retainedZip=ZipChoice(archive,withContext(Dispatchers.IO){SafeZip.read(repo.file(archive.file).inputStream())})
+        }
+        zipChoice.value=retainedZip
     }
     fun importZip(paths: Set<String>)=runTask {
         val choice=zipChoice.value ?: return@runTask
-        val imported=withContext(Dispatchers.IO) { paths.map { path -> val decoded=TextCodec.decode(choice.entries.getValue(path),preferences.value.defaultEncoding); val display=DocumentBytes.editorText(decoded);val body=repo.atomic(display.first.toByteArray()); Session(Document(kind="ZIP",name=path.substringAfterLast('/'),path=path,zipId=choice.archive.id,originalPath=path,encoding=decoded.encoding,newline=decoded.newline,normalizedNewlines=display.second,savedRevision=0,savedBody=body,body=body),display.first) } }
-        _tabs.value+=imported; _active.value=imported.lastOrNull()?.document?.id ?: _active.value; zipChoice.value=null; persistTabs()
+        zipChoice.value=null
+        val stored=(_tabs.value.map{it.document}+repo.dao.all()).filter{it.zipId==choice.archive.id && it.deleted==null}.distinctBy{it.id}
+        val imported=paths.map { path ->
+            val previous=stored.find{it.originalPath==path || it.path==path}
+            if(previous!=null)loadSession(previous.id)
+            else withContext(Dispatchers.IO) {
+                val decoded=TextCodec.decode(choice.entries.getValue(path),preferences.value.defaultEncoding)
+                val display=DocumentBytes.editorText(decoded);val body=repo.atomic(display.first.toByteArray())
+                Session(Document(kind="ZIP",name=path.substringAfterLast('/'),path=path,zipId=choice.archive.id,originalPath=path,encoding=decoded.encoding,newline=decoded.newline,normalizedNewlines=display.second,savedRevision=0,savedBody=body,body=body),display.first)
+            }
+        }
+        _tabs.value=_tabs.value.map{tab -> imported.find{it.document.id==tab.document.id} ?: tab}+
+            imported.filter{item -> _tabs.value.none{it.document.id==item.document.id}}
+        _active.value=imported.lastOrNull()?.document?.id ?: _active.value
+        zipChoice.value=null;persistTabs()
+    }
+    suspend fun linkedPreviewSources():List<Pair<String,String>> {
+        val ids=_tabs.value.filter{it.document.name.substringAfterLast('.').lowercase() in setOf("css","js")}.map{it.document.id}
+        return ids.map{loadSession(it).let{s->s.document.path to s.text}}
+    }
+    suspend fun zipNameChanges(ids:List<String>):List<Pair<String,String>> {
+        val paths=ids.map{loadSession(it).document.path}
+        return paths.zip(PwaCompatibility.uniqueZipPaths(paths)).filter{it.first!=it.second}
     }
     suspend fun loadSession(id: String): Session = _tabs.value.find{it.document.id==id && !it.unloaded} ?: withContext(Dispatchers.IO) {val d=repo.dao.get(id) ?: error("文書がありません");Session(d,repo.read(d.body))}
-    suspend fun zipBytes(ids: List<String>, archiveId: String?=null): ByteArray = withContext(Dispatchers.IO) {
+    suspend fun zipBytes(ids: List<String>, archiveId: String?=null, outputEncoding:String=preferences.value.outputEncoding): ByteArray = withContext(Dispatchers.IO) {
         val selected=ids.map{loadSession(it)}; val files=if(archiveId!=null) { val a=repo.dao.archive(archiveId) ?: error("元ZIPがありません"); SafeZip.read(repo.file(a.file).inputStream()) } else linkedMapOf()
         val docs=if(archiveId!=null) { repo.dao.all().filter{it.zipId==archiveId}.map { d -> _tabs.value.find{it.document.id==d.id && !it.unloaded} ?: Session(d,repo.read(d.body)) } } else selected
-        require(docs.map{it.document.path}.distinct().size==docs.size){"同名パスが重複しています。名前変更してください"}
-        docs.forEach{ s -> if(s.document.originalPath!=null && s.document.originalPath!=s.document.path)files.remove(s.document.originalPath); files[s.document.path]=DocumentBytes.encode(s.document,s.text) }
+        val paths=docs.map{it.document.path}
+        if(archiveId!=null)require(paths.distinct().size==docs.size){"元ZIPのパスが重複しています。名前変更してください"}
+        val names=if(archiveId==null)PwaCompatibility.uniqueZipPaths(paths)else paths
+        docs.zip(names).forEach{ (s,path) -> if(s.document.originalPath!=null && s.document.originalPath!=s.document.path)files.remove(s.document.originalPath);files[path]=DocumentBytes.encode(s.document.copy(encoding=PwaCompatibility.outputEncoding(s.document,outputEncoding)),s.text) }
         ByteArrayOutputStream().also {SafeZip.write(files.toList(),it)}.toByteArray()
     }
     fun exportZip(uri: Uri, ids: List<String>, overwrite: Boolean=false, expected: String?=null, archiveId: String?=null)=runTask {
         val captured=ids.map{loadSession(it)}; captured.forEach{flush(it.document.id);repo.snapshot(it.document,it.text,"ZIP保存前",preferences.value.histories)}
-        val bytes=zipBytes(ids,archiveId)
+        val bytes=zipBytes(ids,archiveId,if(overwrite)"元の文字コード"else preferences.value.outputEncoding)
         if(overwrite) { val actual=withContext(Dispatchers.IO){repo.context.contentResolver.openInputStream(uri)?.use{TextCodec.hash(it.readBounded(64*1024*1024))} ?: error("元ZIPが読めません")}; require(actual==expected){"元ZIPが外部で変更されています。ZIPのコピーを保存してください"} }
         val hash=withContext(Dispatchers.IO) { repo.context.contentResolver.openOutputStream(uri,"wt")?.use{it.write(bytes);it.flush()} ?: error("ZIPの書込権限がありません"); val verify=repo.context.contentResolver.openInputStream(uri)?.use{TextCodec.hash(it.readBounded(64*1024*1024))}; check(verify==TextCodec.hash(bytes)){"ZIPの書込検証に失敗しました"}; verify!! }
         if(overwrite && archiveId!=null) {

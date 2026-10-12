@@ -44,6 +44,67 @@ class ViewModelTest {
         await{future.isDone};return future.get()
     }
     private fun memo(text:String,name:String="test.txt"):Session{val count=vm.tabs.value.size;vm.newMemo(text,name);await{vm.tabs.value.size==count+1 && vm.current()?.status=="保存済み"};return vm.current()!!}
+    @Test fun previewReplacementChangesOnlyTheTargetDocumentAndKeepsHistory() {
+        val target=memo("hello target","target.txt");val other=memo("hello other","other.txt")
+        vm.mode(target.document.id,"HTML")
+        vm.replaceOne(target.document.id,target.document.revision,0,"hello","updated",true,false)
+        await{vm.session(target.document.id).text=="updated target"}
+        assertEquals("hello other",vm.session(other.document.id).text)
+        assertTrue(background{vm.history(target.document.id)}.any{background{vm.repo.read(it.body)}=="hello target"})
+    }
+    @Test fun staleReplacementCannotOverwriteNewInput() {
+        val target=memo("hello target")
+        vm.edit(target.document.id,"hello new input",0,0,0)
+        vm.replaceOne(target.document.id,target.document.revision,0,"hello","updated",true,false)
+        await{vm.message.value?.contains("本文が変更") == true}
+        assertEquals("hello new input",vm.session(target.document.id).text)
+    }
+    @Test fun readAndOutputEncodingAreIndependentAndCopyDoesNotChangeOriginal() {
+        val first=memo("日本語","first.txt")
+        background{vm.repo.prefs.set("encoding","Shift_JIS");vm.repo.prefs.set("outputEncoding","UTF-8 BOM")}
+        await{vm.preferences.value.defaultEncoding=="Shift_JIS" && vm.preferences.value.outputEncoding=="UTF-8 BOM"}
+        val before=vm.session(first.document.id).document
+        vm.export(first.document.id,Uri.parse("content://test.files/document"),false,3)
+        await{vm.message.value?.contains("コピーを保存") == true}
+        assertEquals("UTF-8 BOM",TextCodec.decode(provider.file.readBytes()).encoding)
+        assertEquals(before.encoding,vm.session(first.document.id).document.encoding)
+        assertEquals(before.savedRevision,vm.session(first.document.id).document.savedRevision)
+    }
+    @Test fun outputDefaultsDoNotReencodeExternalOverwrite() {
+        provider.file.writeBytes(TextCodec.encode("日本語","Shift_JIS"))
+        background{vm.repo.prefs.set("outputEncoding","UTF-8 BOM")}
+        await{vm.preferences.value.outputEncoding=="UTF-8 BOM"}
+        vm.openUri(Uri.parse("content://test.files/document"),3,"Shift_JIS")
+        await{vm.current()?.document?.kind=="EXTERNAL" && vm.current()?.status=="保存済み"}
+        val first=vm.current()!!;vm.edit(first.document.id,"更新した日本語",0,0,0)
+        vm.save(first.document.id)
+        await{vm.session(first.document.id).status=="保存済み"}
+        assertArrayEquals(TextCodec.encode("更新した日本語","Shift_JIS"),provider.file.readBytes())
+    }
+    @Test fun zipBrowserContinuesWithoutDuplicatingOrDiscardingEditedDocuments() {
+        val bytes=java.io.ByteArrayOutputStream();SafeZip.write(listOf("a.txt" to "first".toByteArray(),"b.txt" to "second".toByteArray()),bytes)
+        provider.file.writeBytes(bytes.toByteArray());vm.openZip(Uri.parse("content://test.files/document"),3)
+        await{vm.zipChoice.value!=null};val archive=vm.zipChoice.value!!.archive.id
+        vm.importZip(setOf("a.txt"));await{vm.tabs.value.size==1}
+        val first=vm.current()!!;vm.edit(first.document.id,"edited first",0,0,0)
+        vm.showZipBrowser();await{vm.zipChoice.value!=null}
+        assertEquals(archive,vm.zipChoice.value!!.archive.id)
+        vm.importZip(setOf("a.txt","b.txt"));await{vm.tabs.value.size==2 && vm.zipChoice.value==null}
+        assertEquals("edited first",vm.session(first.document.id).text)
+        assertEquals(2,vm.tabs.value.map{it.document.id}.distinct().size)
+    }
+    @Test fun duplicateZipExportPreservesBothBodiesAndDoesNotRenameTabs() {
+        val first=memo("first","a.txt");val second=memo("second","a.txt")
+        val files=SafeZip.read(java.io.ByteArrayInputStream(background{vm.zipBytes(listOf(first.document.id,second.document.id))}))
+        assertEquals("first",files.getValue("a.txt").decodeToString());assertEquals("second",files.getValue("a-2.txt").decodeToString())
+        assertTrue(vm.tabs.value.all{it.document.path=="a.txt"})
+    }
+    @Test fun compatibilityPreviewLoadsUnloadedCssBodies() {
+        val css="a{}".repeat(400_000);val first=memo(css,"STYLE.CSS");val second=memo("<p>test</p>","index.html")
+        vm.activate(second.document.id);await{vm.session(first.document.id).unloaded}
+        assertEquals(css,background{vm.linkedPreviewSources()}.single().second)
+    }
+
     @Test fun closeAllPreservesLatestTextAndAllowsRestoringTabs() {
         val first=memo("original","first.txt");val second=memo("second","second.txt")
         vm.edit(second.document.id,"unsaved latest text",3,3,0)

@@ -128,6 +128,16 @@ class NativeEditor(context: Context, attrs: AttributeSet?=null): EditText(contex
         if(!p.highlight){editableText.getSpans(0,text.length,ForegroundColorSpan::class.java).forEach{editableText.removeSpan(it)}}
         invalidate()
     }
+    fun replaceForDocument(id:String,revision:Long,result:SingleReplacement.Result):Boolean {
+        val current=currentSession ?: return false
+        if(current.document.id!=id || current.document.revision!=revision || source!=current.text)return false
+        if(result.end-result.start>EditorWindow.SIZE)return false
+        apply(current.copy(document=current.document.copy(cursor=result.start,selection=result.end)),prefs,currentDark)
+        if(result.start<windowStart || result.end>windowEnd)return false
+        setSelection(result.start-windowStart,result.end-windowStart)
+        insert(result.value)
+        return true
+    }
     fun insert(value:String) { val inserted=if(newlineMode=="LF")value else TextCodec.convertNewlines(value,newlineMode); val start=minOf(selectionStart,selectionEnd).coerceAtLeast(0);val end=maxOf(selectionStart,selectionEnd).coerceAtLeast(0);editableText.replace(start,end,inserted);setSelection((start+inserted.length).coerceAtMost(text.length));requestFocus() }
     fun indentUnit()=if(prefs.tabs)"\t" else " ".repeat(prefs.indent.coerceIn(1,8))
     fun move(delta:Int,select:Boolean=false) {
@@ -201,8 +211,9 @@ class NativeEditor(context: Context, attrs: AttributeSet?=null): EditText(contex
     override fun onDetachedFromWindow(){super.onDetachedFromWindow();colorJob?.cancel()}
 }
 @Composable
-fun EditorSurface(session:Session,prefs:Preferences,dark:Boolean,modifier:Modifier,onReady:(NativeEditor)->Unit,onEdit:(String,Int,Int,Int)->Unit,onShortcut:(String)->Unit,undoStorage:MutableMap<String,Pair<List<String>,List<String>>>?=null) {
+fun EditorSurface(session:Session,prefs:Preferences,dark:Boolean,modifier:Modifier,onReady:(NativeEditor)->Unit,onEdit:(String,Int,Int,Int)->Unit,onShortcut:(String)->Unit,undoStorage:MutableMap<String,Pair<List<String>,List<String>>>?=null,onFocus:(Boolean)->Unit={}) {
     if(session.unloaded) { Box(modifier){Text("本文を読み込み中…")};return }
+    val editHandler=onEdit;val shortcutHandler=onShortcut
     key(session.document.id) {
         var editor by remember { mutableStateOf<NativeEditor?>(null) }
         Column(modifier) {
@@ -211,7 +222,7 @@ fun EditorSurface(session:Session,prefs:Preferences,dark:Boolean,modifier:Modifi
             Text("大容量編集・位置 ${session.document.cursor} / ${session.text.length}",modifier=Modifier.weight(1f).padding(8.dp),style=MaterialTheme.typography.labelSmall)
             TextButton(onClick={editor?.page(1)}){Text("次の区間")}
         }
-        AndroidView(modifier=Modifier.weight(1f).fillMaxWidth(),factory={context->NativeEditor(context).apply{this.onEdit=null;apply(session,prefs,dark);this.onEdit=onEdit;this.onShortcut=onShortcut;undoStorage?.get(session.document.id)?.let{(undo,redo)->undoStack.addAll(undo);redoStack.addAll(redo)};editor=this;onReady(this)}},update={view->view.apply(session,prefs,dark);view.onEdit=onEdit;view.onShortcut=onShortcut;onReady(view)},onRelease={view->undoStorage?.set(session.document.id,view.undoStack.toList() to view.redoStack.toList())})
+        AndroidView(modifier=Modifier.weight(1f).fillMaxWidth(),factory={context->NativeEditor(context).apply{this.onEdit=null;apply(session,prefs,dark);this.onEdit=editHandler;this.onShortcut=shortcutHandler;undoStorage?.get(session.document.id)?.let{(undo,redo)->undoStack.addAll(undo);redoStack.addAll(redo)};setOnFocusChangeListener{_,focused->onFocus(focused)};editor=this;onReady(this)}},update={view->view.apply(session,prefs,dark);view.onEdit=onEdit;view.onShortcut=onShortcut;onReady(view)},onRelease={view->onFocus(false);undoStorage?.set(session.document.id,view.undoStack.toList() to view.redoStack.toList())})
         }
     }
 }

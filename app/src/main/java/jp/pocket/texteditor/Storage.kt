@@ -78,7 +78,7 @@ data class Preferences(
     val shortcuts: String = "S=保存 Z=Undo Y=Redo F=検索 H=置換 N=新規 O=開く TAB=次タブ",
     val symbolMode: String = "常時", val autosave: Int = 500, val histories: Int = 30,
     val historyMb: Int = 64, val historyDays: Int = 90, val trashDays: Int = 30, val restore: Boolean = true,
-    val defaultEncoding: String = "UTF-8", val defaultNewline: String = "LF",
+    val defaultEncoding: String = "UTF-8", val outputEncoding:String = "元の文字コード", val defaultNewline: String = "LF",
     val indent: Int = 4, val tabs: Boolean = false, val autoIndent: Boolean = true, val brackets: Boolean = false,
     val csvHeader: Boolean = true, val previewAuto: Boolean = false, val compatibility: Boolean = false,
     val largeMb: Int = 5, val mono: Boolean = true, val sort: String = "更新日時"
@@ -93,7 +93,7 @@ class PreferenceStore(private val context: Context) {
         autosave=p[intPreferencesKey("autosave")] ?: 500, histories=p[intPreferencesKey("histories")] ?: 30,
         historyMb=p[intPreferencesKey("historyMb")] ?: 64, historyDays=p[intPreferencesKey("historyDays")] ?: 90, trashDays=p[intPreferencesKey("trashDays")] ?: 30,
         restore=p[booleanPreferencesKey("restore")] ?: true, defaultEncoding=p[stringPreferencesKey("encoding")] ?: "UTF-8",
-        defaultNewline=p[stringPreferencesKey("newline")] ?: "LF", indent=p[intPreferencesKey("indent")] ?: 4,
+        outputEncoding=p[stringPreferencesKey("outputEncoding")] ?: "元の文字コード", defaultNewline=p[stringPreferencesKey("newline")] ?: "LF", indent=p[intPreferencesKey("indent")] ?: 4,
         tabs=p[booleanPreferencesKey("tabs")] ?: false, autoIndent=p[booleanPreferencesKey("autoIndent")] ?: true,
         brackets=p[booleanPreferencesKey("brackets")] ?: false, csvHeader=p[booleanPreferencesKey("csvHeader")] ?: true,
         previewAuto=p[booleanPreferencesKey("previewAuto")] ?: false, compatibility=p[booleanPreferencesKey("compatibility")] ?: false,
@@ -110,7 +110,7 @@ class PreferenceStore(private val context: Context) {
 }
 object PreferenceValues {
     private val ranges=mapOf("fontSize" to 10..36,"lineSpace" to 0..20,"autosave" to 100..5000,"histories" to 1..100,"historyMb" to 8..256,"historyDays" to 1..365,"trashDays" to 1..365,"indent" to 1..8,"largeMb" to 1..20)
-    private val choices=mapOf("theme" to setOf("システム","ライト","ダーク"),"symbolMode" to setOf("常時","編集中のみ","非表示"),"encoding" to setOf("UTF-8","UTF-8 BOM","Shift_JIS"),"newline" to setOf("LF","CRLF","CR"),"sort" to setOf("更新日時","名前"))
+    private val choices=mapOf("theme" to setOf("システム","ライト","ダーク"),"symbolMode" to setOf("常時","編集中のみ","非表示"),"encoding" to setOf("UTF-8","UTF-8 BOM","Shift_JIS"),"outputEncoding" to setOf("元の文字コード","UTF-8","UTF-8 BOM","Shift_JIS"),"newline" to setOf("LF","CRLF","CR"),"sort" to setOf("更新日時","名前"))
     private val flags=setOf("wrap","numbers","highlight","invisible","currentLine","restore","tabs","autoIndent","brackets","csvHeader","previewAuto","compatibility","mono")
     fun normalize(key:String,value:Any):Any? {
         ranges[key]?.let{return (value as? Int)?.coerceIn(it)}

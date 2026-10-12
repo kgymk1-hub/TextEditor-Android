@@ -10,6 +10,16 @@ import org.robolectric.annotation.Config
 @Config(sdk=[28],application=Application::class)
 class NativeEditorTest {
     private fun editor(text:String,cursor:Int=0)=NativeEditor(ApplicationProvider.getApplicationContext()).apply { apply(Session(Document(cursor=cursor,selection=cursor),text),Preferences(),false) }
+    @Test fun replacementRejectsAnotherDocumentsEditorAndSupportsUndo() {
+        val document=Document(revision=4)
+        val e=NativeEditor(ApplicationProvider.getApplicationContext()).apply{apply(Session(document,"hello world"),Preferences(),false)}
+        val result=SingleReplacement.calculate("hello world",0,"hello","updated",true,false)
+        assertFalse(e.replaceForDocument("another-document",4,result));assertEquals("hello world",e.text.toString())
+        assertFalse(e.replaceForDocument(document.id,3,result));assertEquals("hello world",e.text.toString())
+        assertTrue(e.replaceForDocument(document.id,4,result));assertEquals("updated world",e.text.toString())
+        e.undo();assertEquals("hello world",e.text.toString())
+    }
+
     @Test fun japaneseSelectionAndSymbolInsertion() {val e=editor("日本語の文章",3);e.setSelection(0,3);e.insert("東京");assertEquals("東京の文章",e.text.toString());assertEquals(2,e.selectionStart)}
     @Test fun undoRedoRestoresText() {val e=editor("本文",2);e.insert("追加");assertEquals("本文追加",e.text.toString());e.undo();assertEquals("本文",e.text.toString());e.redo();assertEquals("本文追加",e.text.toString())}
     @Test fun cursorSupportsLineBoundaries() {val e=editor("first\n日本語\nthird",8);e.lineBoundary(false);assertEquals(6,e.selectionStart);e.lineBoundary(true);assertEquals(9,e.selectionStart);e.move(-1,true);assertEquals(9,e.selectionStart);assertEquals(8,e.selectionEnd)}
