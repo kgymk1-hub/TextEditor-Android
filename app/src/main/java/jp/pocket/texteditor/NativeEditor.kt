@@ -41,13 +41,13 @@ class NativeEditor(context: Context, attrs: AttributeSet?=null): EditText(contex
     }
     private var before=""; private var lastUndo=0L; private var lastInput=""; private var lastStart=0; private var lastRemoved=0
     private var colorJob: Job?=null; private val syntaxScope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
-    private val linePaint=Paint().apply{color=0x153e8c70}
+    private val linePaint=Paint().apply{color=0x152563eb}
     private val bracketPaint=Paint().apply{style=Paint.Style.STROKE;strokeWidth=2f;color=0xff799a8b.toInt()}
     private val gutter=Paint(Paint.ANTI_ALIAS_FLAG); private var lineStarts=listOf(0)
     private val scale=ScaleGestureDetector(context,object:ScaleGestureDetector.SimpleOnScaleGestureListener(){ override fun onScale(detector: ScaleGestureDetector): Boolean { textSize=(textSize*detector.scaleFactor).coerceIn(10f,36f);return true } })
     init {
         gravity=android.view.Gravity.TOP or android.view.Gravity.START
-        setBackgroundColor(android.graphics.Color.TRANSPARENT); setTextColor(0xff25352f.toInt())
+        setBackgroundColor(android.graphics.Color.TRANSPARENT); setTextColor(0xff1f2937.toInt())
         isSingleLine=false; setHorizontallyScrolling(false)
         inputType=android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         setPadding(48,12,16,24); minHeight=0; contentDescription="本文エディタ"
@@ -113,7 +113,7 @@ class NativeEditor(context: Context, attrs: AttributeSet?=null): EditText(contex
     fun apply(s:Session,p:Preferences,dark:Boolean) {
         currentSession=s;currentDark=dark
         prefs=p;newlineMode=if(s.document.normalizedNewlines)"LF"else s.document.newline;extension=s.document.name.substringAfterLast('.').lowercase()
-        setTextColor(if(dark)0xffe3e9e4.toInt() else 0xff25352f.toInt());gutter.color=if(dark)0xff869e91.toInt() else 0xff788c81.toInt()
+        setTextColor(if(dark)0xffe5e7eb.toInt() else 0xff1f2937.toInt());gutter.color=if(dark)0xff9ca3af.toInt() else 0xff6b7280.toInt()
         textSize=p.fontSize.toFloat();typeface=if(p.mono)Typeface.MONOSPACE else Typeface.DEFAULT
         setLineSpacing(p.lineSpace.toFloat(),1f);setHorizontallyScrolling(!p.wrap)
         setPadding(if(p.numbers)64 else 16,12,16,24)

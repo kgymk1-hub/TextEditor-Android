@@ -38,25 +38,52 @@ class PwaUiTest {
         while(vm.current()?.status!="保存済み" || vm.preferences.value.autosave!=5000){shadowOf(Looper.getMainLooper()).idle();check(System.nanoTime()<deadline);Thread.sleep(5)}
     }
     @After fun cleanup(){store.clear();ReflectionHelpers.getField<CoroutineScope>(vm,"scope").cancel();vm.repo.db.close()}
+    private fun awaitModel(condition:()->Boolean){compose.waitUntil(10_000){shadowOf(Looper.getMainLooper()).idle();condition()}}
     @Test fun txtCanPreviewThenSearchAndReplaceInTheCorrectEditor() {
         compose.setContent{PocketApp(vm)}
         compose.onNodeWithText("HTML").performClick()
-        compose.waitUntil(10_000){vm.current()?.document?.mode=="HTML"}
+        awaitModel{vm.current()?.document?.mode=="HTML"}
         compose.onNodeWithText("⋮").performClick()
         compose.onNodeWithText("検索・履歴・比較 ›").performClick()
         compose.onNodeWithText("検索").performClick()
-        compose.waitUntil(10_000){vm.current()?.document?.mode=="編集"}
+        awaitModel{vm.current()?.document?.mode=="編集"}
         compose.onNode(hasSetTextAction() and hasText("検索")).performTextInput("hello")
         compose.onNode(hasSetTextAction() and hasText("置換")).performTextInput("updated")
         compose.waitUntil(10_000){compose.onAllNodesWithText("1件").fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithText("1件置換").performScrollTo().assertIsDisplayed().performClick()
         compose.onNodeWithText("1件置換").performScrollTo().assertIsDisplayed().performClick()
-        compose.waitUntil(10_000){vm.current()?.text=="<p>updated</p>"}
+        awaitModel{vm.current()?.text=="<p>updated</p>"}
         compose.onNodeWithText("閉じる").performClick()
         compose.onNodeWithText("未保存 1件",substring=true).assertExists()
         compose.onNodeWithText("↶").performClick()
-        compose.waitUntil(10_000){vm.current()?.text=="<p>hello</p>"}
+        awaitModel{vm.current()?.text=="<p>hello</p>"}
     }
+    @Test fun quickThemeTogglePersistsBothThemesWithoutLosingText() {
+        compose.setContent{PocketApp(vm)}
+        compose.onNodeWithText("HTML").assertIsDisplayed()
+        compose.onNodeWithContentDescription("ダークモードに切り替え").assertIsDisplayed().performClick()
+        awaitModel{vm.preferences.value.theme=="ダーク"}
+        compose.onNodeWithContentDescription("ライトモードに切り替え").assertIsDisplayed().performClick()
+        awaitModel{vm.preferences.value.theme=="ライト"}
+        assertEquals("<p>hello</p>",vm.current()!!.text)
+    }
+    @Test fun addTabAndCloseButtonsKeepTheirConfirmationFlow() {
+        compose.setContent{PocketApp(vm)}
+        compose.onNodeWithContentDescription("新しいタブを追加").performClick()
+        awaitModel{vm.tabs.value.size==2 && vm.current()?.status=="保存済み"}
+        compose.onNodeWithTag("tab-strip").performScrollToIndex(1)
+        compose.onNodeWithContentDescription("無題.txtのタブを閉じる").performClick()
+        compose.onNodeWithText("キャンセル").performClick()
+        assertEquals(2,vm.tabs.value.size)
+        compose.onNodeWithContentDescription("全タブを閉じる").performClick()
+        compose.onNodeWithText("キャンセル").performClick()
+        assertEquals(2,vm.tabs.value.size)
+        compose.onNodeWithContentDescription("全タブを閉じる").performClick()
+        compose.onNode(hasText("全タブを閉じる") and hasClickAction()).assertIsDisplayed().performClick()
+        awaitModel{vm.tabs.value.isEmpty()}
+        compose.onNodeWithText("Pocket Text Editor").assertExists()
+    }
+
     @Test fun focusOnlySymbolBarWorksWithoutAnOnScreenKeyboard() {
         vm.setting("symbolMode","編集中のみ")
         val deadline=System.nanoTime()+10_000_000_000

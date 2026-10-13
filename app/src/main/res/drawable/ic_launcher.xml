@@ -1,1 +1,9 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108"><path android:fillColor="#285D50" android:pathData="M0,0h108v108h-108z"/><path android:fillColor="#EDF6EF" android:pathData="M29,22h50v64h-50z"/><path android:fillColor="#285D50" android:pathData="M37,35h34v4h-34zM37,47h34v4h-34zM37,59h26v4h-26zM37,71h18v4h-18z"/></vector>
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="512" android:viewportHeight="512">
+<path android:fillColor="#2563eb" android:pathData="M96.0,0.0H416.0A96.0,96.0 0,0 1,512.0,96.0V416.0A96.0,96.0 0,0 1,416.0,512.0H96.0A96.0,96.0 0,0 1,0.0,416.0V96.0A96.0,96.0 0,0 1,96.0,0.0Z"/>
+<path android:fillColor="#ffffff" android:pathData="M144.0,88.0H368.0A28.0,28.0 0,0 1,396.0,116.0V396.0A28.0,28.0 0,0 1,368.0,424.0H144.0A28.0,28.0 0,0 1,116.0,396.0V116.0A28.0,28.0 0,0 1,144.0,88.0Z"/>
+<path android:fillColor="#93c5fd" android:pathData="M163.0,146.0H349.0A11.0,11.0 0,0 1,360.0,157.0V157.0A11.0,11.0 0,0 1,349.0,168.0H163.0A11.0,11.0 0,0 1,152.0,157.0V157.0A11.0,11.0 0,0 1,163.0,146.0Z"/>
+<path android:fillColor="#bfdbfe" android:pathData="M163.0,202.0H349.0A11.0,11.0 0,0 1,360.0,213.0V213.0A11.0,11.0 0,0 1,349.0,224.0H163.0A11.0,11.0 0,0 1,152.0,213.0V213.0A11.0,11.0 0,0 1,163.0,202.0Z"/>
+<path android:fillColor="#bfdbfe" android:pathData="M163.0,258.0H309.0A11.0,11.0 0,0 1,320.0,269.0V269.0A11.0,11.0 0,0 1,309.0,280.0H163.0A11.0,11.0 0,0 1,152.0,269.0V269.0A11.0,11.0 0,0 1,163.0,258.0Z"/>
+<path android:fillColor="#bfdbfe" android:pathData="M163.0,314.0H333.0A11.0,11.0 0,0 1,344.0,325.0V325.0A11.0,11.0 0,0 1,333.0,336.0H163.0A11.0,11.0 0,0 1,152.0,325.0V325.0A11.0,11.0 0,0 1,163.0,314.0Z"/>
+<path android:pathData="M350 360 L396 406" android:fillColor="#00000000" android:strokeColor="#1d4ed8" android:strokeWidth="24" android:strokeLineCap="round"/>
+<path android:pathData="M376 334 L402 360 L336 426 L310 400 Z" android:fillColor="#facc15"/></vector>

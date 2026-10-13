@@ -20,6 +20,9 @@ import androidx.compose.ui.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.semantics.contentDescription
@@ -60,6 +63,16 @@ fun PocketApp(vm:EditorViewModel) {
     LaunchedEffect(message){message?.let{snackbar.showSnackbar(it);vm.message.value=null}}
     LaunchedEffect(active){if(active!=null && tabs.isNotEmpty())home=false}
     DisposableEffect(full){val activity=context as? ComponentActivity;val controller=activity?.let{WindowCompat.getInsetsController(it.window,it.window.decorView)};if(full)controller?.hide(WindowInsetsCompat.Type.systemBars())else controller?.show(WindowInsetsCompat.Type.systemBars());onDispose{controller?.show(WindowInsetsCompat.Type.systemBars())}}
+    DisposableEffect(dark) {
+        val activity=context as? ComponentActivity
+        val controller=activity?.let{WindowCompat.getInsetsController(it.window,it.window.decorView)}
+        val oldStatus=controller?.isAppearanceLightStatusBars;val oldNavigation=controller?.isAppearanceLightNavigationBars
+        val window=activity?.window;val oldStatusColor=window?.statusBarColor;val oldNavigationColor=window?.navigationBarColor
+        val barColor=if(dark)0xff111827.toInt()else 0xfff9fafb.toInt()
+        window?.statusBarColor=barColor;window?.navigationBarColor=barColor
+        controller?.isAppearanceLightStatusBars=!dark;controller?.isAppearanceLightNavigationBars=!dark
+        onDispose {oldStatus?.let{controller?.isAppearanceLightStatusBars=it};oldNavigation?.let{controller?.isAppearanceLightNavigationBars=it};oldStatusColor?.let{window?.statusBarColor=it};oldNavigationColor?.let{window?.navigationBarColor=it}}
+    }
     val fileLauncher=rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()){result ->
         if(result.resultCode==android.app.Activity.RESULT_OK) {
             val data=result.data;val uri=data?.data;val flags=data?.flags ?: 0
@@ -97,6 +110,7 @@ fun PocketApp(vm:EditorViewModel) {
         else {zipOutputIds=ids;zipOutputName=name;zipOutputShare=share;zipNotice=changes.joinToString("\n"){"${it.first} → ${it.second}"};dialog="zipNames"}
     }}
     fun action(label:String){menu=false;val s=vm.current();when(label){
+        "HTMLプレビュー"->s?.let{vm.mode(it.document.id,"HTML")};"CSVプレビュー"->s?.let{vm.mode(it.document.id,"CSV")};"Markdownプレビュー"->s?.let{vm.mode(it.document.id,"Markdown")};"編集に戻る"->s?.let{vm.mode(it.document.id,"編集")}
         "新規"->{vm.newMemo();home=false};"開く"->pick("open");"保存"->s?.let{vm.save(it.document.id)}
         "名前を付けて保存"->s?.let{pick("saveAs",it.document.id,it.document.name)}
         "コピーを保存"->s?.let{pick("copy",it.document.id,it.document.name)}
@@ -127,32 +141,37 @@ fun PocketApp(vm:EditorViewModel) {
         else->editor?.insert(if(symbol=="Tab")editor?.indentUnit() ?: "    " else symbol)
     }}
     val session=tabs.find{it.document.id==active}
+    val keyboardVisible=WindowInsets.ime.getBottom(LocalDensity.current)>0
     var previewExtra by remember{mutableStateOf<Map<String,ByteArray>>(emptyMap())}
     LaunchedEffect(active,previewVersion,session?.document?.mode){
         previewExtra=if(session!=null && session.document.mode!="編集")try{vm.previewResources(session.document.id)}catch(e:Exception){vm.message.value="関連リソース読込失敗：${e.message}";emptyMap()}else emptyMap()
     }
 
-    MaterialTheme(colorScheme=if(dark)darkColorScheme()else lightColorScheme()) {
+    MaterialTheme(colorScheme=pocketColors(dark)) {
         Scaffold(snackbarHost={SnackbarHost(snackbar)},modifier=Modifier.imePadding()) {padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
                 if(home || session==null) {
-                    Row(Modifier.fillMaxWidth().padding(16.dp),horizontalArrangement=Arrangement.SpaceBetween){Column{Text("Pocket",style=MaterialTheme.typography.headlineMedium);Text("Text Editor",style=MaterialTheme.typography.titleMedium)};TextButton(onClick={dialog="settings"}){Text("設定")}}
+                    Row(Modifier.fillMaxWidth().padding(12.dp),verticalAlignment=Alignment.CenterVertically){Image(painterResource(R.drawable.ic_launcher),contentDescription=null,modifier=Modifier.size(40.dp));Text("Pocket Text Editor",Modifier.weight(1f).padding(horizontal=8.dp),style=MaterialTheme.typography.titleLarge,maxLines=2);ThemeButton(dark){vm.setting("theme",if(dark)"ライト"else "ダーク")};TextButton(onClick={dialog="settings"}){Text("設定")}}
                     Row(Modifier.padding(horizontal=16.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){Button(onClick={action("新規")}){Text("＋ 新規")};OutlinedButton(onClick={action("開く")}){Text("開く")};TextButton(onClick={dialog="homeMenu"}){Text("その他")}}
                     HomeList(docs,prefs.sort,selected,{selected=it},onOpen={vm.openMemo(it);home=false},onFavorite={vm.favorite(it)},onTrash={target=it.id;dialog="trash"},onRestore={vm.restoreTrash(it)},onRename={target=it.id;dialog="rename"},onDuplicate={vm.duplicate(it)},onSort={vm.setting("sort",it)})
                 } else {
                     if(!full) {
-                        Row(Modifier.fillMaxWidth().heightIn(min=56.dp),verticalAlignment=Alignment.CenterVertically){TextButton(onClick={home=true;vm.flushAll()}){Text("一覧")};Column(Modifier.weight(1f)){Text(session.document.name,maxLines=1,style=MaterialTheme.typography.titleMedium);Text("${session.status} · 未保存 ${PwaCompatibility.unsavedCount(tabs)}件",style=MaterialTheme.typography.labelSmall,color=if(session.status.contains("失敗") || session.status.contains("競合"))MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)};TextButton(onClick={editor?.undo()}){Text("↶")};TextButton(onClick={editor?.redo()}){Text("↷")};TextButton(onClick={action("保存")}){Text("保存")};Box{TextButton(onClick={menu=true}){Text("⋮")};DropdownMenu(expanded=menu,onDismissRequest={menu=false},modifier=Modifier.heightIn(max=480.dp)){editorMenuGroups.keys.forEach{group->DropdownMenuItem(text={Text("$group ›")},onClick={menu=false;menuGroup=group;dialog="menuGroup"})}}}}
-                        Text("${session.document.kind} · ${session.document.encoding} · ${session.document.newline} · ${session.document.uri ?: session.document.path}",style=MaterialTheme.typography.labelSmall,maxLines=2,modifier=Modifier.padding(horizontal=12.dp))
+                        EditorHeader(session.document.name,session.status,PwaCompatibility.unsavedCount(tabs),session.status.contains("失敗") || session.status.contains("競合"),dark,
+                            {dialog="documentInfo"},{home=true;vm.flushAll()},{editor?.undo()},{editor?.redo()},{action("保存")},{action("開く")},{dialog="quickTools"},{vm.setting("theme",if(dark)"ライト"else "ダーク")}) {
+                            Box{IconButton(onClick={menu=true},modifier=Modifier.semantics{contentDescription="その他の操作"}){Text("⋮")};DropdownMenu(expanded=menu,onDismissRequest={menu=false},modifier=Modifier.heightIn(max=480.dp)){editorMenuGroups.keys.forEach{group->DropdownMenuItem(text={Text("$group ›")},onClick={menu=false;menuGroup=group;dialog="menuGroup"})}}}
+                        }
+                        if(!keyboardVisible)Text("${session.document.kind} · ${session.document.encoding} · ${session.document.newline} · ${session.document.uri ?: session.document.path}",style=MaterialTheme.typography.labelSmall,maxLines=1,overflow=TextOverflow.Ellipsis,modifier=Modifier.padding(horizontal=12.dp))
                         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
-                            LazyRow(Modifier.weight(1f)) {items(tabs,key={it.document.id}){tab->
+                            LazyRow(Modifier.weight(1f).testTag("tab-strip")) {items(tabs,key={it.document.id}){tab->
                                 Row(verticalAlignment=Alignment.CenterVertically) {
-                                    FilterChip(selected=tab.document.id==active,onClick={vm.activate(tab.document.id)},label={Text(tab.document.name+if(tab.document.kind!="MEMO" && tab.document.revision!=tab.document.savedRevision)" •"else "")},modifier=Modifier.padding(start=4.dp))
+                                    FilterChip(selected=tab.document.id==active,onClick={vm.activate(tab.document.id)},label={Text(tab.document.name+if(tab.document.kind!="MEMO" && tab.document.revision!=tab.document.savedRevision)" •"else "",modifier=Modifier.widthIn(max=160.dp),maxLines=1,overflow=TextOverflow.Ellipsis)},modifier=Modifier.padding(start=4.dp))
                                     IconButton(onClick={target=tab.document.id;dialog="close"},modifier=Modifier.semantics{contentDescription="${tab.document.name}のタブを閉じる"}){Text("✕")}
                                 }
                             }}
+                            IconButton(onClick={action("新規")},modifier=Modifier.semantics{contentDescription="新しいタブを追加"}){Text("＋")}
                             TextButton(onClick={action("全タブを閉じる")},modifier=Modifier.semantics{contentDescription="全タブを閉じる"}){Text("✕ 全タブ")}
                         }
-                        Row(Modifier.horizontalScroll(rememberScrollState()),verticalAlignment=Alignment.CenterVertically){val modes=PwaCompatibility.modes;modes.forEach{mode->TextButton(onClick={vm.mode(session.document.id,mode)}){Text(if(mode==session.document.mode)"● $mode"else mode)}};if(session.document.mode!="編集")TextButton(onClick={previewVersion++}){Text("更新")}}
+                        if(!keyboardVisible || session.document.mode!="編集")Row(Modifier.horizontalScroll(rememberScrollState()),verticalAlignment=Alignment.CenterVertically){val modes=PwaCompatibility.modes;modes.forEach{mode->TextButton(onClick={vm.mode(session.document.id,mode)}){Text(if(mode==session.document.mode)"● $mode"else mode)}};if(session.document.mode!="編集")TextButton(onClick={previewVersion++}){Text("更新")}}
                     } else TextButton(onClick={full=false}){Text("操作を表示")}
                     BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                         val viewportWidth=maxWidth
@@ -187,6 +206,8 @@ fun PocketApp(vm:EditorViewModel) {
             }
         }
         when(dialog){
+            "documentInfo"->session?.let{TextDialog("文書情報","${it.document.name}\n${it.document.kind} · ${it.document.encoding} · ${it.document.newline}\n${it.document.uri ?: it.document.path}\n${it.status}"){dialog=""}}
+            "quickTools"->MenuDialog("よく使う操作",listOf("検索","現在タブコピー","全タブ結合コピー","ZIPを開く","ZIP内ファイル一覧","設定"),{dialog="";action(it)},{dialog=""})
             "zipNames"->ZipNamesDialog(zipNotice,{dialog="";if(zipOutputShare)shareFile(true,zipOutputIds)else pick("zipCopy",name=zipOutputName,ids=zipOutputIds)},{dialog=""})
             "menuGroup"->MenuDialog(menuGroup,editorMenuGroups[menuGroup].orEmpty(),{dialog="";action(it)},{dialog=""})
             "homeMenu"->MenuDialog("ファイル操作",listOf("ZIPを開く","ZIP内ファイル一覧","フォルダを開く","全タブZIP保存","バックアップを書き出す","バックアップを読み込む","閉じたタブを復元","ライセンス","選択文書ZIP保存","選択文書結合コピー"),{dialog="";action(it)},{dialog=""})
