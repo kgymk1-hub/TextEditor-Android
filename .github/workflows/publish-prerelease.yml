@@ -1,0 +1,23 @@
+name: Publish verified 1.0.3-dev prerelease
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'release/v1.0.3-dev-public/**'
+      - '.github/workflows/publish-prerelease.yml'
+permissions:
+  contents: write
+concurrency:
+  group: publish-v1.0.3-dev
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify signed files, upload, verify downloads, and publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python release/v1.0.3-dev-public/publish.py

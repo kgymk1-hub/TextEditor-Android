@@ -1,0 +1,15 @@
+{
+  "commit": "8732480eb5fe470c10c8d5cd086592ea03f3785a",
+  "tests": 87,
+  "lint_warnings": {
+    "debug": 21,
+    "release": 21
+  },
+  "device_tests": false,
+  "release_signed": true,
+  "version_code": 4,
+  "version_name": "1.0.3-dev",
+  "built_code_commit": "872c84f3502474f7de42eaef7fd1ba66322d11ff",
+  "signing_certificate_sha256": "796224e6df568f22837800ea80a57d2549734d3e4b5cd5421a63aab36a90fe48",
+  "signing_key_renewed": true
+}
