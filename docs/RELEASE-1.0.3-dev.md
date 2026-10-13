@@ -35,3 +35,11 @@
 **別の安全な非公開場所へのバックアップは未完了です。** 現環境だけを保管先にせず、所有者管理の永続的な非公開保管先へ移す必要があります。以後はこの新しい鍵を継続使用し、versionCodeを増やします。
 
 既存の署名前APK／AABは `scripts/sign-artifacts.py` で署名できます。環境変数と手順は [RELEASE.md](RELEASE.md) を参照してください。
+
+## 公開確認
+
+2026年10月13日に公開完了。Release ID411472010、Draft=false／Prerelease=trueです。GitHub Actionsが添付10件のSHA-256とダウンロード内容を照合してから公開しました。公開ページとAPKダウンロードのHTTP 200、およびダウンロードしたAPKのSHA-256とv2／v3署名を再確認済みです。
+
+[公開ワークフローの検証結果](https://github.com/kgymk1-hub/TextEditor-Android/actions/runs/38372388326)
+
+APK SHA-256：`26097059e6fe616b59a235ca19b890725a10faec904518f3e4f9275dc40bf0d1`

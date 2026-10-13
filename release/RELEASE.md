@@ -1,3 +1,5 @@
+最新版1.0.3-devは [RELEASE-1.0.3-dev.md](RELEASE-1.0.3-dev.md) を参照してください。以下は旧版1.0.0-devの記録です。
+
 # GitHubでの配布と署名
 
 配布先は [GitHub Releases](https://github.com/kgymk1-hub/TextEditor-Android/releases) です。`v1.0.0-dev` は実機受入前の検証版（Prerelease）です。アプリのversionCodeは1、versionNameは1.0.0-devです。
